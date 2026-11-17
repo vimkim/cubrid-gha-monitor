@@ -35,6 +35,14 @@ def safe_snapshot(value, error, now):
     return suppress(value)
 
 
+def collect_snapshot(github, demo, capacities):
+    raw = fixture(time.time()) if demo else github.collect()
+    now = time.time()
+    result = snapshot(raw, now, capacities, raw['coverage'])
+    result['history_scope'] = raw.get('history_scope', '데모 이력')
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description='Local CUBRID Actions dashboard')
     parser.add_argument('--port', type=int, default=8765)
@@ -48,13 +56,7 @@ def main():
         parser.error('capacities must be between 0 and 10000')
     github = GitHub()
 
-    def load():
-        now = time.time()
-        raw = fixture(now) if args.demo else github.collect()
-        result = snapshot(raw, now, caps, raw['coverage'])
-        result['history_scope'] = raw.get('history_scope', '데모 이력')
-        return result
-    cache = SnapshotCache(load)
+    cache = SnapshotCache(lambda: collect_snapshot(github, args.demo, caps))
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):

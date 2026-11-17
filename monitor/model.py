@@ -200,8 +200,12 @@ def snapshot(raw, now, capacities, coverage=True):
             continue
         residuals = [duration-elapsed for duration, _ in matches if duration > elapsed]
         if residuals:
-            run['completion'] = window(now+min(residuals), now+max(residuals), len(matches), now-max(end for _, end in matches))
-            run['completion']['assumption'] = '완료된 동일 작업 구성과 같은 경로라는 조건부 시나리오'
+            earliest, latest = now+min(residuals), now+max(residuals)
+            if unfinished:
+                earliest = max(earliest, stamp(run['observed_finish']['earliest']))
+                latest = max(latest, stamp(run['observed_finish']['latest']))
+            run['completion'] = window(earliest, latest, len(matches), now-max(end for _, end in matches))
+            run['completion']['assumption'] = '동일 작업 구성의 이력과 현재 대기열을 반영한 조건부 시나리오'
         else:
             run['completion'] = unknown('overrun', '동일 구성 이력의 완료 시간을 초과했습니다')
     return {'observed_at': iso(now), 'source': raw.get('source', 'live'), 'viewer': raw.get('viewer'), 'coverage': coverage,

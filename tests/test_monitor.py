@@ -1,9 +1,11 @@
 import unittest
+from copy import deepcopy
+from unittest.mock import patch
 
 from monitor.demo import fixture
 from monitor.github import GitHub, SnapshotCache
 from monitor.model import iso, snapshot, state
-from monitor.server import safe_snapshot
+from monitor.server import collect_snapshot, safe_snapshot
 
 NOW = 1800000000
 CAPS = {'build': 8, 'general': 174, 'light': 20}
@@ -36,6 +38,22 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(self.runs[103]['completion']['kind'], 'window')
         self.assertGreaterEqual(self.runs[103]['completion']['samples'], 3)
         self.assertIn('조건부', self.runs[103]['completion']['assumption'])
+
+    def test_ci_completion_respects_known_queued_work(self):
+        template = next(r for r in self.raw['runs'] if r['id'] == 104)
+        for n in range(5):
+            run = deepcopy(template)
+            run['id'] = 300+n
+            run['jobs'][0]['id'] = 3000+n
+            run['jobs'][0]['created_at'] = iso(NOW-200+n)
+            self.raw['runs'].append(run)
+        result = snapshot(self.raw, NOW, dict(CAPS, light=1))
+        run = next(r for r in result['runs'] if r['id'] == 103)
+        known, whole = run['observed_finish'], run['completion']
+        self.assertEqual(known['kind'], 'window')
+        self.assertEqual(whole['kind'], 'window')
+        self.assertGreaterEqual(whole['earliest'], known['earliest'])
+        self.assertGreaterEqual(whole['latest'], known['latest'])
 
     def test_missing_history_and_incomplete_coverage(self):
         self.raw['runs'] = [r for r in self.raw['runs'] if r['status'] != 'completed']
@@ -91,6 +109,16 @@ class AcquisitionTests(unittest.TestCase):
         data = GitHub(api).collect()
         self.assertFalse(data['coverage'])
         self.assertIn('300', data['warnings'][0])
+
+    def test_model_clock_is_read_after_collection(self):
+        clock = {'now': NOW}
+        class SlowGitHub:
+            def collect(self):
+                clock['now'] += 90
+                return fixture(NOW)
+        with patch('monitor.server.time.time', side_effect=lambda: clock['now']):
+            result = collect_snapshot(SlowGitHub(), False, CAPS)
+        self.assertEqual(result['observed_at'], iso(NOW+90))
 
     def test_failed_refresh_keeps_last_good_value(self):
         calls = iter([{'observed_at': 'old'}, RuntimeError('offline')])
