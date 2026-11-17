@@ -18,6 +18,14 @@ GitHub 없이 예시를 보려면 `just demo`를 실행합니다. 예시 화면�
 
 `just test`는 표준 라이브러리 단위 테스트를 실행합니다. `just smoke`는 별도로 설치된 Playwright와 Chromium을 사용해 데모를 헤드리스로 확인합니다. 다른 설치 경로는 `PLAYWRIGHT_MODULE=/absolute/path/to/playwright just smoke`로 지정합니다.
 
+선택적으로 프로젝트 디렉터리에 테스트 도구를 설치할 수 있습니다. 애플리케이션 실행에는 필요하지 않습니다.
+
+```sh
+npm install --no-save --no-package-lock playwright
+npx playwright install chromium
+just smoke
+```
+
 ## 해석
 
 대기 순서는 관측된 준비 작업의 생성 시각 순서로 계산한 모델입니다. GitHub가 같은 순서로 작업을 배정한다는 보장은 없습니다. 일반 풀에 설정상 빈 자리가 있어도 오래 기다리는 작업이 있으면 정체로 표시하고 예상을 중지합니다. 이력 부족, 실행 시간 초과, 수집 실패, 미확인 풀 또는 작업 상태도 예상을 제한합니다.

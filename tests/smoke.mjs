@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { strict as assert } from 'node:assert';
 
 const require = createRequire(import.meta.url);
-const playwright = require(process.env.PLAYWRIGHT_MODULE || '/home/vimkim/.local/share/mise/installs/npm-playwright/latest/node_modules/playwright');
+const playwright = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const server = spawn('python3', ['-m', 'monitor.server', '--demo', '--port', '0'], {stdio:['ignore','pipe','pipe']});
 let browser;
 try {
@@ -26,10 +26,20 @@ try {
   assert.match(await eligible.innerText(), /조건부 시나리오/);
   const notStarted = page.locator('.run').filter({hasText:'medium 시작 대기'});
   assert.match(await notStarted.innerText(), /예상/);
-  const stalled = page.locator('.run').filter({hasText:'OOS 체인 재사용'});
-  assert.match(await stalled.innerText(), /추가 단계 대기/);
-  await stalled.locator('summary').click();
-  assert.match(await stalled.innerText(), /장시간 대기/);
+  await page.locator('#pr-filter').fill('8559');
+  const expanded = page.locator('#active .run');
+  assert.equal(await expanded.count(), 1);
+  await expanded.locator('summary').click();
+  assert.ok(await expanded.locator('details').evaluate(el => el.open));
+  await page.setViewportSize({width:390,height:844});
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'expanded details must fit the viewport');
+  const jobs = expanded.locator('.jobs');
+  assert.ok(await jobs.evaluate(el => el.scrollWidth > el.clientWidth), 'the jobs table must scroll horizontally');
+  await jobs.evaluate(el => { el.scrollLeft = el.scrollWidth; });
+  assert.ok(await jobs.evaluate(el => el.scrollLeft > 0), 'the jobs table must be scrollable');
+  await page.setViewportSize({width:1440,height:1000});
+  assert.match(await expanded.innerText(), /추가 단계 대기/);
+  assert.match(await expanded.innerText(), /장시간 대기/);
   await page.locator('#pr-filter').fill('8601');
   assert.equal(await page.locator('#active .run').count(), 1);
   await page.reload();
