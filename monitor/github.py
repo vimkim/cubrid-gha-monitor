@@ -1,4 +1,3 @@
-"""Read bounded workflow attempts through the user's existing gh authentication."""
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import re

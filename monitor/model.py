@@ -1,4 +1,3 @@
-"""Turn GitHub job observations into a bounded, conditional queue model."""
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 import heapq
@@ -64,7 +63,6 @@ def window(start, end, samples, age):
 
 
 def snapshot(raw, now, capacities, coverage=True):
-    """The input runs are exact attempts, each with its own complete job list."""
     history = defaultdict(list)
     for run in raw['runs']:
         if run.get('status') != 'completed' or not run.get('jobs_complete', True):
@@ -92,7 +90,6 @@ def snapshot(raw, now, capacities, coverage=True):
             j['state'], j['pool'], j['stage'] = state(original), pool(original), stage(original.get('name'))
             j['estimate'] = unknown('not_ready', '대기 중인 작업이 아닙니다')
             jobs.append(j)
-        # Gate-only comment runs are not CI attempts.
         if not any(j['stage'] in ('build', 'plan', 'shell', 'sql', 'medium', 'sql_by_cci') and j['state'] not in ('skipped', 'cancelled') for j in jobs):
             if run.get('jobs_complete', True):
                 continue
@@ -180,7 +177,6 @@ def snapshot(raw, now, capacities, coverage=True):
                                             max(j['finish']['sample_age_seconds'] for j in unfinished))
         else:
             run['observed_finish'] = unknown('unfinished_jobs', '관측된 작업의 완료 시각을 알 수 없음')
-        # Matching a complete historical shape is a scenario, not a promise that future jobs match.
         if not coverage or not run['jobs_complete'] or not run['actual_start'] or any(j['state'] in ('unknown', 'cancelled') for j in run['jobs']):
             continue
         if not any(j['stage'] == 'plan' and j['state'] == 'done' for j in run['jobs']) or not any(j['stage'] in ('shell', 'sql', 'medium', 'sql_by_cci') for j in run['jobs']):

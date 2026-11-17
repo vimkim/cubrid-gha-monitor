@@ -1,4 +1,3 @@
-"""Loopback HTTP server and single-owner snapshot refresh."""
 import argparse
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer

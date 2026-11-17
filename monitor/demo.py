@@ -1,4 +1,3 @@
-"""Offline observations. Times are relative so the demo does not age out."""
 from .model import iso
 
 
