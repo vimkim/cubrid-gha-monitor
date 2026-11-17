@@ -1,0 +1,1 @@
+"""CUBRID GitHub Actions monitor."""

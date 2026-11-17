@@ -1,0 +1,5 @@
+[project]
+name = "cubrid-gha-monitor"
+version = "0.1.0"
+description = "Local CUBRID Actions queue and timing dashboard"
+requires-python = ">=3.11"
