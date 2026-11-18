@@ -22,11 +22,17 @@ GitHub 없이 예시를 보려면 `just demo`를 실행합니다. 예시 화면�
 
 ### 백그라운드 실행
 
-Linux에서 systemd 사용자 서비스 관리자가 실행 중이면 `just up`으로 대시보드를 백그라운드에서 시작합니다. 기본 주소는 `http://127.0.0.1:8765`입니다. Dev2에서는 `just up-dev2`를 실행하고 `http://192.168.4.2:8765`를 엽니다.
+Linux에서 systemd 사용자 서비스 관리자가 실행 중이면 `just up`으로 대시보드를 백그라운드에서 시작합니다.
 
-두 명령은 현재 사용자의 `cubrid-gha-monitor.service`를 공유합니다. `just down`으로 서비스를 종료합니다. 실행 중에 시작 명령을 다시 실행하면 기존 인스턴스가 계속 실행됩니다. 시작 옵션을 바꾸려면 서비스를 종료한 뒤 `just up --port 9000`처럼 다시 시작합니다.
+- `just up`은 기본 주소 `http://127.0.0.1:8765`에서 접속을 받습니다.
+- `just up-dev2`는 `http://192.168.4.2:8765`에서 접속을 받습니다.
+- `just up-for-all`은 모든 IPv4 인터페이스에서 접속을 받습니다.
 
-시작 명령은 대시보드가 포트를 열 때까지 기다립니다. 로그는 `journalctl --user -u cubrid-gha-monitor.service`로 확인합니다. 재부팅 후에는 시작 명령을 직접 실행합니다.
+시작 명령은 대시보드가 포트를 열 때까지 기다린 뒤 접속 URL을 표시합니다. 나중에 실행 상태와 URL을 확인하려면 `just status`를 실행합니다. 모든 IPv4 인터페이스에서 접속을 받는 경우 로컬 URL과 확인 가능한 인터페이스의 URL을 표시합니다.
+
+세 시작 명령은 현재 사용자의 `cubrid-gha-monitor.service`를 공유합니다. 실행 중에 시작 명령을 다시 실행하면 기존 인스턴스의 URL을 표시합니다. 시작 옵션을 바꾸려면 `just down`으로 종료한 뒤 `just up --port 9000`처럼 다시 시작합니다.
+
+서비스 상세 상태는 `systemctl --user status cubrid-gha-monitor.service`로 확인합니다. 로그는 `journalctl --user -u cubrid-gha-monitor.service`로 확인합니다. 재부팅 후에는 시작 명령을 직접 실행합니다.
 
 ## 확인
 

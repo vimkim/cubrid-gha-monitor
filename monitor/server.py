@@ -114,13 +114,16 @@ def main():
 
     with ThreadingHTTPServer((args.host, args.port), Handler) as server:
         notify_socket = os.environ.pop('NOTIFY_SOCKET', '')
+        bound_host, bound_port = server.server_address
+        host = bound_host if notify_socket else args.host
+        url = f'http://{host}:{bound_port}'
         cache.get()
-        print(f"{'DEMO' if args.demo else 'LIVE'} http://{args.host}:{server.server_port}", flush=True)
+        print(f"{'DEMO' if args.demo else 'LIVE'} {url}", flush=True)
         if notify_socket:
             if notify_socket.startswith('@'):
                 notify_socket = '\0' + notify_socket[1:]
             with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as notifier:
-                notifier.sendto(b'READY=1', notify_socket)
+                notifier.sendto(f'READY=1\nSTATUS={url}'.encode(), notify_socket)
         try:
             server.serve_forever()
         except KeyboardInterrupt:
