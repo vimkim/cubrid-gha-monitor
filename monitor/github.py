@@ -8,13 +8,26 @@ import time
 BASE = 'repos/CUBRID/cubrid'
 WORKFLOW = f'{BASE}/actions/workflows/gha-ci.yml/runs'
 ACTIVE = ('queued', 'in_progress', 'waiting', 'requested', 'pending')
+RUN_FIELDS = ('id', 'run_attempt', 'status', 'conclusion', 'display_title', 'created_at',
+              'updated_at', 'event', 'head_branch', 'pull_requests')
+JOB_FIELDS = ('id', 'name', 'status', 'conclusion', 'created_at', 'started_at',
+              'completed_at', 'runner_name', 'labels')
+AUTHOR_TTL = 86400
+
+
+def reusable_attempt(run):
+    return (run['status'] == 'completed' and run.get('jobs_complete', False)
+            and all(job.get('status') == 'completed' for job in run['jobs']))
 
 
 class GitHub:
-    def __init__(self, api=None):
+    def __init__(self, api=None, previous=None):
         self.api = api or self.gh
-        self.completed = {}
-        self.authors = {}
+        previous_runs = previous['runs'] if previous is not None else []
+        self.completed = {(r['id'], r['run_attempt']): (r.get('updated_at'), r['jobs'])
+                          for r in previous_runs if reusable_attempt(r)}
+        self.authors = {r['pr']: (r['author'], r['author_checked_at']) for r in previous_runs
+                        if r.get('pr') and 'author_checked_at' in r}
         self.lock = threading.Lock()
 
     @staticmethod
@@ -37,30 +50,36 @@ class GitHub:
 
     def attempt(self, run):
         key = (run['id'], run['run_attempt'])
-        if run['status'] == 'completed' and key in self.completed:
-            return dict(self.completed[key])
+        updated_at = run.get('updated_at')
+        with self.lock:
+            cached = self.completed.get(key)
+        if run['status'] == 'completed' and cached is not None and cached[0] == updated_at:
+            return dict(run, jobs=cached[1], jobs_complete=True)
         jobs, complete = self.pages(f'{BASE}/actions/runs/{key[0]}/attempts/{key[1]}/jobs', 'jobs', 10)
         # A rerun can begin between listing runs and fetching the attempt.
         latest = self.api(f'{BASE}/actions/runs/{key[0]}')
         if latest['run_attempt'] != key[1]:
             raise RuntimeError(f'run {key[0]} attempt changed during scan')
-        result = dict(run, jobs=jobs, jobs_complete=complete)
-        if run['status'] == 'completed' and complete:
+        compact_jobs = [{field: job[field] for field in JOB_FIELDS if field in job} for job in jobs]
+        result = dict(run, jobs=compact_jobs, jobs_complete=complete)
+        if reusable_attempt(result):
             with self.lock:
-                self.completed[key] = result
+                self.completed[key] = (updated_at, compact_jobs)
         return result
 
     def author(self, number):
         with self.lock:
-            if number in self.authors:
-                return self.authors[number]
-        value = self.api(f'{BASE}/pulls/{number}').get('user', {}).get('login')
+            cached = self.authors.get(number)
+        if cached is not None and 0 <= time.time() - cached[1] < AUTHOR_TTL:
+            return cached[0]
+        value = (self.api(f'{BASE}/pulls/{number}').get('user') or {}).get('login')
         with self.lock:
-            self.authors[number] = value
+            self.authors[number] = (value, time.time())
         return value
 
     def collect(self):
         warnings, runs, complete = [], {}, True
+        history_available = True
         for status in (*ACTIVE, 'completed'):
             try:
                 found, full = self.pages(f'{WORKFLOW}?status={status}', 'workflow_runs', 3 if status != 'completed' else 1)
@@ -68,9 +87,13 @@ class GitHub:
                     complete = False
                     warnings.append(f'{status}: 300개 제한으로 활성 실행이 누락될 수 있습니다')
                 for run in found:
-                    runs[(run['id'], run['run_attempt'])] = run
+                    existing = runs.get(run['id'])
+                    if existing is None or run['run_attempt'] >= existing['run_attempt']:
+                        runs[run['id']] = {field: run[field] for field in RUN_FIELDS if field in run}
             except Exception as exc:
-                if status != 'completed':
+                if status == 'completed':
+                    history_available = False
+                else:
                     complete = False
                 warnings.append(f'{status}: {exc}')
         try:
@@ -109,23 +132,32 @@ class GitHub:
                 except Exception as exc:
                     warnings.append(f'PR #{futures[future]} 작성자: {exc}')
             for run in result:
-                run['author'] = authors.get(run['pr'])
+                number = run['pr']
+                run['author'] = authors.get(number)
+                if number in authors:
+                    run['author_checked_at'] = self.authors[number][1]
+        if complete and history_available:
+            completed_keys = {(r['id'], r['run_attempt']) for r in result if r['status'] == 'completed'}
+            with self.lock:
+                self.completed = {key: value for key, value in self.completed.items() if key in completed_keys}
+                self.authors = {number: value for number, value in self.authors.items() if number in numbers}
         if not result and warnings:
             raise RuntimeError('; '.join(warnings[:3]))
         return {'source': 'live', 'viewer': viewer, 'runs': result, 'warnings': warnings,
-                'coverage': complete, 'history_scope': '최근 완료 실행 최대 100개'}
+                'coverage': complete, 'history_available': history_available,
+                'history_scope': '최근 완료 실행 최대 100개'}
 
 
 class SnapshotCache:
-    def __init__(self, loader, interval=60):
+    def __init__(self, loader, interval=60, initial=None):
         self.loader, self.interval = loader, interval
-        self.value, self.error, self.updated = None, None, 0
+        self.value, self.error, self.updated = initial, None, None
         self.lock = threading.Lock()
         self.loading = False
 
     def get(self):
         with self.lock:
-            if not self.loading and time.monotonic() - self.updated >= self.interval:
+            if not self.loading and (self.updated is None or time.monotonic() - self.updated >= self.interval):
                 self.loading = True
                 threading.Thread(target=self.refresh, daemon=True).start()
             return self.value, self.error, self.loading

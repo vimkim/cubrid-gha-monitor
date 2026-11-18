@@ -1,13 +1,16 @@
 import argparse
 import json
+import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import sqlite3
 import time
 from urllib.parse import urlsplit
 
 from .demo import fixture
 from .github import GitHub, SnapshotCache
 from .model import snapshot, stamp, unknown
+from .observations import ObservationStore, cache_path
 
 STATIC = Path(__file__).resolve().parent.parent / 'static'
 
@@ -34,12 +37,22 @@ def safe_snapshot(value, error, now):
     return suppress(value)
 
 
-def collect_snapshot(github, demo, capacities):
-    raw = fixture(time.time()) if demo else github.collect()
-    now = time.time()
-    result = snapshot(raw, now, capacities, raw['coverage'])
+def render_snapshot(raw, observed_at, capacities):
+    result = snapshot(raw, observed_at, capacities, raw['coverage'])
     result['history_scope'] = raw.get('history_scope', '데모 이력')
     return result
+
+
+def collect_snapshot(github, demo, capacities, store=None):
+    raw = fixture(time.time()) if demo else github.collect()
+    observed_at = time.time()
+    value = render_snapshot(raw, observed_at, capacities)
+    if store is not None and raw['coverage'] and raw['history_available']:
+        try:
+            store.save(observed_at, raw)
+        except sqlite3.Error as exc:
+            logging.warning('Could not save GitHub observation: %s', exc)
+    return value
 
 
 def main():
@@ -54,9 +67,19 @@ def main():
     caps = {'build': args.build_capacity, 'general': args.general_capacity, 'light': args.light_capacity}
     if any(value < 0 or value > 10000 for value in caps.values()):
         parser.error('capacities must be between 0 and 10000')
-    github = GitHub()
-
-    cache = SnapshotCache(lambda: collect_snapshot(github, args.demo, caps))
+    store, previous, initial = None, None, None
+    if not args.demo:
+        try:
+            store = ObservationStore(cache_path())
+            saved = store.load()
+            if saved is not None:
+                observed_at, raw = saved
+                initial = render_snapshot(raw, observed_at, caps)
+                previous = raw
+        except (OSError, sqlite3.Error, ValueError, TypeError, KeyError) as exc:
+            logging.warning('Could not restore GitHub observation: %s', exc)
+    github = GitHub(previous=previous)
+    cache = SnapshotCache(lambda: collect_snapshot(github, args.demo, caps, store), initial=initial)
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -88,6 +111,7 @@ def main():
             self.wfile.write(data)
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
+    cache.get()
     print(f"{'DEMO' if args.demo else 'LIVE'} http://{args.host}:{server.server_port}", flush=True)
     try:
         server.serve_forever()

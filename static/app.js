@@ -123,7 +123,7 @@ async function refresh() {
       snapshot = data.snapshot;
       const stale = Date.now() - new Date(snapshot.observed_at).getTime() > 180000;
       estimateUnavailable = data.error ? '최근 갱신 실패' : !snapshot.coverage ? '활성 작업 수집 불완전' : stale ? '관측 데이터가 오래됨' : null;
-      $('freshness').textContent = `${snapshot.source === 'demo' ? 'DEMO' : 'LIVE'} · ${age(snapshot.observed_at)} 관측${snapshot.coverage ? '' : ' · 수집 불완전'}`;
+      $('freshness').textContent = `${snapshot.source === 'demo' ? 'DEMO' : 'LIVE'} · ${age(snapshot.observed_at)} 관측${snapshot.coverage ? '' : ' · 수집 불완전'}${data.loading ? ' · 갱신 중' : ''}`;
       $('freshness').title = `관측 ${time(snapshot.observed_at)} (서울)`;
       const alerts = $('alerts'); alerts.replaceChildren();
       if (snapshot.source === 'demo') add(alerts, 'div', 'DEMO · 실제 GitHub 데이터가 아닌 예시입니다.', 'alert');
