@@ -44,6 +44,7 @@ def collect_snapshot(github, demo, capacities):
 
 def main():
     parser = argparse.ArgumentParser(description='Local CUBRID Actions dashboard')
+    parser.add_argument('--host', default='127.0.0.1', help='address to bind (default: %(default)s)')
     parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--demo', action='store_true')
     parser.add_argument('--build-capacity', type=int, default=8)
@@ -60,7 +61,8 @@ def main():
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             host = self.headers.get('Host', '').split(':')[0]
-            if host not in ('localhost', '127.0.0.1', '[::1]'):
+            local_address = self.connection.getsockname()[0]
+            if host not in ('localhost', '127.0.0.1', args.host, local_address):
                 self.send_error(403)
                 return
             path = urlsplit(self.path).path
@@ -85,8 +87,8 @@ def main():
             self.end_headers()
             self.wfile.write(data)
 
-    server = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)
-    print(f"{'DEMO' if args.demo else 'LIVE'} http://127.0.0.1:{server.server_port}", flush=True)
+    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    print(f"{'DEMO' if args.demo else 'LIVE'} http://{args.host}:{server.server_port}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
