@@ -23,6 +23,14 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(run['next_start']['kind'], 'window')
         self.assertEqual(state({'status': 'queued', 'started_at': iso(NOW)}), 'waiting')
 
+    def test_develop_push_contributes_to_queue_rank(self):
+        self.assertTrue(self.runs[101]['develop_push'])
+        self.assertFalse(self.runs[104]['develop_push'])
+        self.raw['runs'] = [run for run in self.raw['runs'] if run['id'] != 101]
+        without_push = snapshot(self.raw, NOW, CAPS)
+        own_run = next(run for run in without_push['runs'] if run['id'] == 104)
+        self.assertEqual(self.runs[104]['jobs'][0]['ahead'], own_run['jobs'][0]['ahead'] + 1)
+
     def test_mixed_progress_and_stalled_pool(self):
         run = self.runs[100]
         self.assertEqual(run['stages']['medium']['done'], 1)

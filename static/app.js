@@ -1,6 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const runControls = ['pr-filter', 'author-filter', 'mine-filter', 'group-by-author'];
+const developPushLabel = 'develop 푸시';
 let snapshot = null;
 let estimateUnavailable = null;
 let openRuns = new Set();
@@ -37,17 +38,31 @@ function card(run) {
   const title = add(titlebox, 'div', null, 'run-title');
   if (run.pr) { link(title, `#${run.pr}`, `https://github.com/CUBRID/cubrid/pull/${run.pr}`); title.append(document.createTextNode('  ')); }
   title.append(document.createTextNode(run.title.replace(/^PR\s*#\d+\s*[·:-]?\s*/i, '')));
-  add(titlebox, 'div', `작성자 ${run.author || '미확인'} · 시도 ${run.attempt} · 생성 ${time(run.created_at)}`, 'run-meta');
-  const status = run.status === 'completed' ? `완료 · ${run.conclusion || '결과 미확인'}` : run.jobs.some(j => j.state === 'running') ? '실행 중' : '대기 중';
-  add(top, 'span', status, `status ${run.status === 'completed' ? 'done' : status === '대기 중' ? 'waiting' : ''}`);
+  const meta = add(titlebox, 'div', null, 'run-meta');
+  if (run.develop_push) add(meta, 'span', developPushLabel, 'develop-push');
+  else meta.append(`작성자 ${run.author || '미확인'} · `);
+  meta.append(`시도 ${run.attempt} · 생성 ${time(run.created_at)}`);
+  const completed = run.status === 'completed';
+  const status = completed ? `완료 · ${run.conclusion || '결과 미확인'}` : run.jobs.some(j => j.state === 'running') ? '실행 중' : '대기 중';
+  add(top, 'span', status, `status ${completed ? 'done' : status === '대기 중' ? 'waiting' : ''}`);
   const facts = add(card, 'div', null, 'facts');
-  fact(facts, '실제 시작 / 다음 관측 작업 시작', run.actual_start ? `실제 ${time(run.actual_start)}` : estimate(run.next_start));
+  fact(facts, run.actual_start ? '실제 시작' : '시작 예상', run.actual_start ? time(run.actual_start) : estimate(run.next_start));
+  const showObservedFinish = !completed && !estimateUnavailable && run.completion.kind !== 'window' && run.observed_finish.kind === 'window';
+  if (completed) fact(facts, '전체 CI 완료', status);
+  else if (showObservedFinish) fact(facts, '관측 작업 완료 예상', estimate(run.observed_finish));
+  else {
+    const completion = estimate(run.completion);
+    const assumption = !estimateUnavailable && run.completion.assumption;
+    fact(facts, '전체 CI 완료 예상', assumption ? `${completion} · ${assumption}` : completion);
+  }
   const waits = run.jobs.filter(j => j.state === 'waiting');
   const block = waits.length ? waits.map(j => j.pool).filter((v,i,a) => a.indexOf(v) === i).join(', ') : '현재 대기 작업 없음';
   const ahead = waits.filter(j => j.ahead != null).map(j => j.ahead);
   fact(facts, '대기 풀 / 관측 작업 앞 순서', ahead.length ? `${block} · 최소 ${Math.min(...ahead)}개 앞 (모델)` : block);
-  fact(facts, '전체 CI 완료', run.status === 'completed' ? `완료 · ${run.conclusion || '결과 미확인'}` : `${estimate(run.completion)}${run.completion.assumption && !estimateUnavailable ? ` · ${run.completion.assumption}` : ''}`);
-  if (run.status !== 'completed') { const observed = add(card, 'div', null, 'observed-finish'); observed.textContent = `현재 관측된 작업 완료: ${estimate(run.observed_finish)}`; }
+  if (!completed) {
+    const note = showObservedFinish ? `전체 CI 완료 · ${estimate(run.completion)}` : `관측 작업 완료 · ${estimate(run.observed_finish)}`;
+    add(card, 'div', note, 'finish-note');
+  }
   const stages = add(card, 'div', null, 'stages');
   for (const [name, counts] of Object.entries(run.stages)) {
     const parts = Object.entries(counts).map(([s,n]) => `${{done:'완료', running:'실행', waiting:'대기', skipped:'건너뜀', cancelled:'취소', unknown:'미확인'}[s] || s} ${n}`);
@@ -68,21 +83,29 @@ function card(run) {
 function renderAuthorGroups(target, runs) {
   const groups = new Map();
   for (const run of runs) {
-    const author = run.author?.toLowerCase() || '';
-    if (!groups.has(author)) groups.set(author, []);
-    groups.get(author).push(run);
+    let label = '작성자 미확인';
+    if (run.develop_push) label = developPushLabel;
+    else if (run.author) label = `@${run.author}`;
+    const key = label.toLowerCase();
+    if (!groups.has(key)) groups.set(key, {label, runs:[]});
+    groups.get(key).runs.push(run);
   }
-  for (const groupRuns of groups.values()) {
+  for (const {label, runs:groupRuns} of groups.values()) {
     const group = add(target, 'section', null, 'author-group');
-    const author = groupRuns[0].author;
-    add(group, 'h4', `${author ? `@${author}` : '작성자 미확인'} · ${groupRuns.length}건`);
+    add(group, 'h4', `${label} · ${groupRuns.length}건`);
     for (const run of groupRuns) group.append(card(run));
   }
 }
 function renderRuns() {
   if (!snapshot) return;
   const pr = $('pr-filter').value.trim().replace(/^#/, ''), author = $('author-filter').value.trim().toLowerCase(), mine = $('mine-filter').checked;
-  const matches = snapshot.runs.filter(r => (!pr || String(r.pr || '').includes(pr)) && (!author || (r.author || '').toLowerCase().includes(author)) && (!mine || !!snapshot.viewer && r.author?.toLowerCase() === snapshot.viewer.toLowerCase()));
+  const viewer = snapshot.viewer?.toLowerCase();
+  const matches = snapshot.runs.filter(run => {
+    const login = run.author?.toLowerCase() || '';
+    return (!pr || String(run.pr || '').includes(pr)) &&
+      (!author || login.includes(author)) &&
+      (!mine || (viewer && login === viewer && !run.develop_push));
+  });
   $('count').textContent = `${matches.length}건`;
   for (const [id, active] of [['active',true], ['recent',false]]) {
     const target = $(id); target.replaceChildren();

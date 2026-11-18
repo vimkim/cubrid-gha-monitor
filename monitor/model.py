@@ -104,6 +104,7 @@ def snapshot(raw, now, capacities, coverage=True):
             counts[j['state']] += 1
         runs.append({'id': run['id'], 'attempt': run['run_attempt'], 'title': run.get('display_title') or '(제목 없음)', 'pr': pr,
                      'author': run.get('author'), 'status': run.get('status'), 'conclusion': run.get('conclusion'),
+                     'develop_push': run.get('event') == 'push' and run.get('head_branch') == 'develop',
                      'created_at': run.get('created_at'), 'actual_start': iso(min(actual)) if actual else None,
                      'jobs_complete': run.get('jobs_complete', True), 'jobs': jobs, 'stages': stages,
                      'completion': unknown('future_work', '추가 단계 대기: 전체 완료 시각은 알 수 없음')})

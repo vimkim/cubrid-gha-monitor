@@ -27,8 +27,8 @@ def fixture(now):
                      job(1002, 'shard medium 00', 'cubrid-arc-light', 'completed', -450, -430, -100, 'success'),
                      job(1003, 'shard shell 00', 'cubrid-arc', 'queued', -800, -800),
                      job(1004, 'nightly batch', 'ubuntu-24.04', 'completed', -900, -900, -900, 'skipped')]})
-    runs.append({'id': 101, 'run_attempt': 1, 'status': 'in_progress', 'display_title': 'PR #8586 · 정렬 비용 개선', 'pr': 8586,
-                 'author': 'colleague', 'created_at': iso(now-1200), 'jobs': [
+    runs.append({'id': 101, 'run_attempt': 1, 'status': 'in_progress', 'display_title': '정렬 비용 개선 (#8586)',
+                 'event': 'push', 'head_branch': 'develop', 'created_at': iso(now-1200), 'jobs': [
                      job(1011, 'build (release)', 'cubrid-arc-build', 'in_progress', -800, -700),
                      job(1012, 'shard medium 00', 'cubrid-arc-light', 'queued', -90, -90)]})
     runs.append({'id': 102, 'run_attempt': 1, 'status': 'queued', 'display_title': 'PR #8600 · 빌드 점검', 'pr': 8600,

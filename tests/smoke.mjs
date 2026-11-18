@@ -25,13 +25,19 @@ try {
   const eligible = page.locator('.run').filter({hasText:'테스트 계획 확인'});
   assert.match(await eligible.innerText(), /조건부 시나리오/);
   const notStarted = page.locator('.run').filter({hasText:'medium 시작 대기'});
-  assert.match(await notStarted.innerText(), /예상/);
+  const timingAndQueue = await notStarted.locator('.facts').innerText();
+  assert.match(timingAndQueue, /시작 예상\s+예상 /);
+  assert.match(timingAndQueue, /관측 작업 완료 예상\s+예상 /);
+  assert.match(await notStarted.innerText(), /전체 CI 완료 · .*전체 완료 시각은 알 수 없음/);
+  const pushCard = page.locator('.run').filter({hasText:'정렬 비용 개선'});
+  assert.match(await pushCard.innerText(), /develop 푸시/);
+  assert.doesNotMatch(await pushCard.innerText(), /작성자 미확인/);
   const groupByAuthor = page.getByRole('checkbox', {name:'작성자별로 묶기'});
   assert.equal(await groupByAuthor.isChecked(), false);
   await groupByAuthor.check();
   const activeRuns = page.locator('#active');
   const authorHeadings = activeRuns.getByRole('heading', {level:4});
-  assert.deepEqual(await authorHeadings.allTextContents(), ['@vimkim · 4건', '@colleague · 1건']);
+  assert.deepEqual(await authorHeadings.allTextContents(), ['@vimkim · 4건', 'develop 푸시 · 1건']);
   const vimkimRuns = activeRuns.locator('section', {has:page.getByRole('heading', {name:'@vimkim · 4건'})});
   assert.deepEqual(await vimkimRuns.getByRole('link', {name:/^#\d+$/}).allTextContents(), ['#8602', '#8600', '#8601', '#8559']);
   assert.deepEqual(await page.locator('#recent').getByRole('heading', {level:4}).allTextContents(), ['@colleague · 6건']);
@@ -60,8 +66,11 @@ try {
   await page.locator('#clear').click();
   assert.equal(await groupByAuthor.isChecked(), false);
   assert.equal(await authorHeadings.count(), 0);
+  const timingBeforeMineFilter = await notStarted.locator('.facts').innerText();
   await page.locator('#mine-filter').check();
   assert.equal(await page.locator('#active .run').count(), 4);
+  assert.equal(await pushCard.count(), 0);
+  assert.equal(await notStarted.locator('.facts').innerText(), timingBeforeMineFilter);
   await page.setViewportSize({width:390,height:844});
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
   await page.screenshot({path:'/tmp/cubrid-gha-monitor-smoke.png', fullPage:true});
@@ -94,7 +103,7 @@ try {
   await page.reload();
   await page.getByText('GitHub 데이터를 읽지 못했습니다: offline').waitFor();
   assert.deepEqual(errors, []);
-  console.log('Headless smoke passed: demo, forecasts, stale and partial data, filters, author grouping, persistence, details, mobile, errors.');
+  console.log('Headless smoke passed: demo, forecasts, stale and partial data, filters, author grouping, develop pushes, persistence, details, mobile, errors.');
 } finally {
   if (browser) await browser.close();
   server.kill('SIGTERM');
