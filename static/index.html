@@ -15,7 +15,13 @@
     <div id="alerts" aria-live="polite"></div>
     <section aria-labelledby="pool-heading"><div class="section-title"><div><span class="section-index">01</span><h2 id="pool-heading">러너 풀</h2></div><p>설정값은 정상 가동 중인 러너 수가 아닙니다</p></div><div id="pools" class="pools"></div></section>
     <section class="runs-section" aria-labelledby="runs-heading"><div class="section-title"><div><span class="section-index">02</span><h2 id="runs-heading">실행 목록</h2><span id="count" class="count"></span></div><p>표시된 전체 작업을 기준으로 대기 순서를 계산합니다</p></div>
-      <div class="filters"><label>PR 번호<input id="pr-filter" type="search" inputmode="numeric" placeholder="예: 8559"></label><label>작성자<input id="author-filter" type="search" placeholder="GitHub 아이디"></label><label class="check"><input id="mine-filter" type="checkbox"> 내 PR만</label><button id="clear" type="button">초기화</button></div>
+      <div class="filters">
+        <label>PR 번호<input id="pr-filter" type="search" inputmode="numeric" placeholder="예: 8559"></label>
+        <label>작성자<input id="author-filter" type="search" placeholder="GitHub 아이디"></label>
+        <label class="check"><input id="mine-filter" type="checkbox"> 내 PR만</label>
+        <label class="check"><input id="group-by-author" type="checkbox"> 작성자별로 묶기</label>
+        <button id="clear" type="button">초기화</button>
+      </div>
       <div class="list-heading"><h3>진행 및 대기</h3><span>작업 상태 기준</span></div><div id="active" class="run-list"></div>
       <div class="list-heading recent-heading"><h3>최근 완료</h3><span>최근 완료 실행 최대 100개 중 실제 CI</span></div><div id="recent" class="run-list"></div>
     </section>

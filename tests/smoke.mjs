@@ -26,9 +26,19 @@ try {
   assert.match(await eligible.innerText(), /조건부 시나리오/);
   const notStarted = page.locator('.run').filter({hasText:'medium 시작 대기'});
   assert.match(await notStarted.innerText(), /예상/);
+  const groupByAuthor = page.getByRole('checkbox', {name:'작성자별로 묶기'});
+  assert.equal(await groupByAuthor.isChecked(), false);
+  await groupByAuthor.check();
+  const activeRuns = page.locator('#active');
+  const authorHeadings = activeRuns.getByRole('heading', {level:4});
+  assert.deepEqual(await authorHeadings.allTextContents(), ['@vimkim · 4건', '@colleague · 1건']);
+  const vimkimRuns = activeRuns.locator('section', {has:page.getByRole('heading', {name:'@vimkim · 4건'})});
+  assert.deepEqual(await vimkimRuns.getByRole('link', {name:/^#\d+$/}).allTextContents(), ['#8602', '#8600', '#8601', '#8559']);
+  assert.deepEqual(await page.locator('#recent').getByRole('heading', {level:4}).allTextContents(), ['@colleague · 6건']);
   await page.locator('#pr-filter').fill('8559');
   const expanded = page.locator('#active .run');
   assert.equal(await expanded.count(), 1);
+  assert.deepEqual(await authorHeadings.allTextContents(), ['@vimkim · 1건']);
   await expanded.locator('summary').click();
   assert.ok(await expanded.locator('details').evaluate(el => el.open));
   await page.setViewportSize({width:390,height:844});
@@ -45,7 +55,11 @@ try {
   await page.reload();
   await page.getByText('테스트 계획 확인').waitFor();
   assert.equal(await page.locator('#pr-filter').inputValue(), '8601');
+  assert.equal(await groupByAuthor.isChecked(), true);
+  assert.deepEqual(await authorHeadings.allTextContents(), ['@vimkim · 1건']);
   await page.locator('#clear').click();
+  assert.equal(await groupByAuthor.isChecked(), false);
+  assert.equal(await authorHeadings.count(), 0);
   await page.locator('#mine-filter').check();
   assert.equal(await page.locator('#active .run').count(), 4);
   await page.setViewportSize({width:390,height:844});
@@ -80,7 +94,7 @@ try {
   await page.reload();
   await page.getByText('GitHub 데이터를 읽지 못했습니다: offline').waitFor();
   assert.deepEqual(errors, []);
-  console.log('Headless smoke passed: demo, forecasts, stale and partial data, filters, persistence, details, mobile, errors.');
+  console.log('Headless smoke passed: demo, forecasts, stale and partial data, filters, author grouping, persistence, details, mobile, errors.');
 } finally {
   if (browser) await browser.close();
   server.kill('SIGTERM');

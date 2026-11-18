@@ -1,15 +1,15 @@
 'use strict';
 const $ = id => document.getElementById(id);
-const filters = ['pr-filter', 'author-filter', 'mine-filter'];
+const runControls = ['pr-filter', 'author-filter', 'mine-filter', 'group-by-author'];
 let snapshot = null;
 let estimateUnavailable = null;
 let openRuns = new Set();
-for (const id of filters) {
+for (const id of runControls) {
   const el = $(id), saved = localStorage.getItem(id);
   if (el.type === 'checkbox') el.checked = saved === 'true'; else el.value = saved || '';
   el.addEventListener('input', () => { localStorage.setItem(id, el.type === 'checkbox' ? el.checked : el.value); renderRuns(); });
 }
-$('clear').addEventListener('click', () => { for (const id of filters) { const el = $(id); if (el.type === 'checkbox') el.checked = false; else el.value = ''; localStorage.removeItem(id); } renderRuns(); });
+$('clear').addEventListener('click', () => { for (const id of runControls) { const el = $(id); if (el.type === 'checkbox') el.checked = false; else el.value = ''; localStorage.removeItem(id); } renderRuns(); });
 function node(tag, text, cls) { const e = document.createElement(tag); if (text != null) e.textContent = text; if (cls) e.className = cls; return e; }
 function add(parent, tag, text, cls) { const e = node(tag, text, cls); parent.append(e); return e; }
 function link(parent, text, url) { const a = add(parent, 'a', text); a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer'; return a; }
@@ -65,6 +65,20 @@ function card(run) {
   for (const j of run.jobs) { const tr = add(body, 'tr'); for (const val of [j.name, `${j.state}${j.conclusion ? ` · ${j.conclusion}` : ''}`, j.pool, j.state === 'waiting' ? estimate(j.estimate) : j.state === 'running' || j.state === 'done' ? time(j.started_at) : '-', j.finish ? estimate(j.finish) : '-', j.ahead == null ? '-' : `${j.ahead}개`]) add(tr, 'td', val || '-'); }
   return card;
 }
+function renderAuthorGroups(target, runs) {
+  const groups = new Map();
+  for (const run of runs) {
+    const author = run.author?.toLowerCase() || '';
+    if (!groups.has(author)) groups.set(author, []);
+    groups.get(author).push(run);
+  }
+  for (const groupRuns of groups.values()) {
+    const group = add(target, 'section', null, 'author-group');
+    const author = groupRuns[0].author;
+    add(group, 'h4', `${author ? `@${author}` : '작성자 미확인'} · ${groupRuns.length}건`);
+    for (const run of groupRuns) group.append(card(run));
+  }
+}
 function renderRuns() {
   if (!snapshot) return;
   const pr = $('pr-filter').value.trim().replace(/^#/, ''), author = $('author-filter').value.trim().toLowerCase(), mine = $('mine-filter').checked;
@@ -74,6 +88,7 @@ function renderRuns() {
     const target = $(id); target.replaceChildren();
     const list = matches.filter(r => (r.status !== 'completed') === active).sort((a,b) => (b.created_at || '').localeCompare(a.created_at || ''));
     if (!list.length) add(target, 'div', mine && !snapshot.viewer ? '현재 사용자를 확인할 수 없습니다.' : '조건에 맞는 실행이 없습니다.', 'empty');
+    else if ($('group-by-author').checked) renderAuthorGroups(target, list);
     else for (const run of list) target.append(card(run));
   }
 }
