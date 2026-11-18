@@ -20,6 +20,14 @@ Dev2의 `192.168.4.2`에서 접속을 받으려면 `just serve-dev2`를 실행�
 
 GitHub 없이 예시를 보려면 `just demo`를 실행합니다. 예시 화면에는 DEMO가 표시됩니다. 포트나 풀 용량을 바꾸려면 `python3 -m monitor.server --help`를 확인합니다. 기본 용량은 build 8, general 174, light 20이며 2026-11-17에 확인한 설정값입니다. 실제 가동 중인 러너 수가 아닙니다. `0`은 용량 미확인으로 취급합니다.
 
+### 백그라운드 실행
+
+Linux에서 systemd 사용자 서비스 관리자가 실행 중이면 `just up`으로 대시보드를 백그라운드에서 시작합니다. 기본 주소는 `http://127.0.0.1:8765`입니다. Dev2에서는 `just up-dev2`를 실행하고 `http://192.168.4.2:8765`를 엽니다.
+
+두 명령은 현재 사용자의 `cubrid-gha-monitor.service`를 공유합니다. `just down`으로 서비스를 종료합니다. 실행 중에 시작 명령을 다시 실행하면 기존 인스턴스가 계속 실행됩니다. 시작 옵션을 바꾸려면 서비스를 종료한 뒤 `just up --port 9000`처럼 다시 시작합니다.
+
+시작 명령은 대시보드가 포트를 열 때까지 기다립니다. 로그는 `journalctl --user -u cubrid-gha-monitor.service`로 확인합니다. 재부팅 후에는 시작 명령을 직접 실행합니다.
+
 ## 확인
 
 `just test`는 표준 라이브러리 단위 테스트를 실행합니다. `just smoke`는 별도로 설치된 Playwright와 Chromium을 사용해 데모를 헤드리스로 확인합니다. 다른 설치 경로는 `PLAYWRIGHT_MODULE=/absolute/path/to/playwright just smoke`로 지정합니다.

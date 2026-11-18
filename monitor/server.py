@@ -2,7 +2,9 @@ import argparse
 import json
 import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import os
 from pathlib import Path
+import socket
 import sqlite3
 import time
 from urllib.parse import urlsplit
@@ -110,15 +112,19 @@ def main():
             self.end_headers()
             self.wfile.write(data)
 
-    server = ThreadingHTTPServer((args.host, args.port), Handler)
-    cache.get()
-    print(f"{'DEMO' if args.demo else 'LIVE'} http://{args.host}:{server.server_port}", flush=True)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.server_close()
+    with ThreadingHTTPServer((args.host, args.port), Handler) as server:
+        notify_socket = os.environ.pop('NOTIFY_SOCKET', '')
+        cache.get()
+        print(f"{'DEMO' if args.demo else 'LIVE'} http://{args.host}:{server.server_port}", flush=True)
+        if notify_socket:
+            if notify_socket.startswith('@'):
+                notify_socket = '\0' + notify_socket[1:]
+            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as notifier:
+                notifier.sendto(b'READY=1', notify_socket)
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
 
 
 if __name__ == '__main__':
