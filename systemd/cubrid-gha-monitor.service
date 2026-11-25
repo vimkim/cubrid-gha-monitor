@@ -1,0 +1,19 @@
+# Managed by cubrid-gha-monitor
+[Unit]
+Description=CUBRID GitHub Actions monitor
+
+[Service]
+Type=notify
+WorkingDirectory=@REPO_DIR@
+Environment="PATH=@PATH@"
+Environment=MONITOR_HOST=127.0.0.1 MONITOR_PORT=8765
+EnvironmentFile=-%E/cubrid-gha-monitor/service.env
+ExecStart=/usr/bin/env python3 -m monitor.server --host ${MONITOR_HOST} --port ${MONITOR_PORT}
+TimeoutStartSec=30s
+KillSignal=SIGINT
+TimeoutStopSec=10s
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target

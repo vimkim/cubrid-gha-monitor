@@ -14,10 +14,42 @@ serve-dev2: (serve "--host" dev2_host)
 
 demo: (serve "--demo")
 
+# Install the persistent unit without starting or restarting the monitor.
+install:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    command -v python3 >/dev/null || { echo 'Install Python 3.11 or newer.' >&2; exit 1; }
+    command -v gh >/dev/null || { echo 'Install the authenticated gh CLI and add it to PATH.' >&2; exit 1; }
+    target="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/{{unit}}"
+    if [[ -L "$target" ]] || { [[ -e "$target" ]] && [[ "$(head -n 1 "$target")" != '# Managed by cubrid-gha-monitor' ]]; }; then
+        echo "Refusing to replace unmanaged unit $target" >&2
+        exit 1
+    fi
+    escape_unit_value() {
+        local value=$1
+        value=${value//\\/\\\\}
+        value=${value//\"/\\\"}
+        printf '%s' "${value//%/%%}"
+    }
+    repo_dir=$(pwd -P)
+    repo_dir=${repo_dir//%/%%}
+    service_path=$(escape_unit_value "$PATH")
+    service=$(<systemd/{{unit}})
+    service=${service//@REPO_DIR@/"$repo_dir"}
+    printf '%s\n' "${service//@PATH@/"$service_path"}" | install -Dm644 /dev/stdin "$target"
+    systemctl --user daemon-reload
+    echo 'Monitor unit installed. Run just up when ready to start it.'
+
 [positional-arguments]
 up *args: && status
     @if systemctl --user is-active --quiet -- {{quote(unit)}}; then \
         printf '%s is already running. Run just down before changing start options.\n' {{quote(unit)}} >&2; \
+    elif [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/{{unit}}" ]; then \
+        if [ "$#" -ne 0 ]; then \
+            printf 'Set the host and port in cubrid-gha-monitor/service.env under your user config directory, then run just up.\n' >&2; \
+            exit 1; \
+        fi; \
+        systemctl --user start {{quote(unit)}}; \
     else \
         systemd-run --user --quiet --same-dir --collect --unit={{quote(unit)}} \
             --service-type=notify --property=TimeoutStartSec=30s \
@@ -30,6 +62,10 @@ up *args: && status
 up-dev2: (up "--host" dev2_host)
 
 up-for-all: (up "--host" all_host)
+
+# Show recent service logs.
+logs:
+    @journalctl --user -u {{quote(unit)}} -n 50 --no-pager
 
 status:
     #!/bin/sh
