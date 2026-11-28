@@ -45,8 +45,13 @@ def render_snapshot(raw, observed_at, capacities):
     return result
 
 
-def collect_snapshot(github, demo, capacities, store=None):
-    raw = fixture(time.time()) if demo else github.collect()
+def collect_snapshot(github, demo, capacities, store=None, auto=False):
+    if demo:
+        raw = fixture(time.time())
+    elif auto and hasattr(github, 'collect_auto'):
+        raw = github.collect_auto()
+    else:
+        raw = github.collect()
     observed_at = time.time()
     value = render_snapshot(raw, observed_at, capacities)
     if store is not None and raw['coverage'] and raw['history_available']:
@@ -81,7 +86,11 @@ def main():
         except (OSError, sqlite3.Error, ValueError, TypeError, KeyError) as exc:
             logging.warning('Could not restore GitHub observation: %s', exc)
     github = GitHub(previous=previous)
-    cache = SnapshotCache(lambda: collect_snapshot(github, args.demo, caps, store), initial=initial)
+    cache = SnapshotCache(
+        lambda: collect_snapshot(github, args.demo, caps, store, auto=True),
+        initial=initial,
+        followup_checker=(lambda: github.needs_history_followup) if not args.demo else None,
+    )
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -93,7 +102,12 @@ def main():
             path = urlsplit(self.path).path
             if path == '/api/snapshot':
                 value, error, loading = cache.get()
-                payload = json.dumps({'snapshot': safe_snapshot(value, error, time.time()), 'error': error, 'loading': loading}, ensure_ascii=False).encode()
+                payload = json.dumps({
+                    'snapshot': safe_snapshot(value, error, time.time()),
+                    'error': error,
+                    'loading': loading,
+                    'refresh': cache.meta(),
+                }, ensure_ascii=False).encode()
                 self.respond(payload, 'application/json; charset=utf-8')
             elif path in ('/', '/app.js', '/style.css'):
                 name = 'index.html' if path == '/' else path[1:]
@@ -110,14 +124,17 @@ def main():
             self.send_header('X-Content-Type-Options', 'nosniff')
             self.send_header('Content-Security-Policy', "default-src 'self'; connect-src 'self'; style-src 'self'; script-src 'self'; base-uri 'none'; frame-ancestors 'none'")
             self.end_headers()
-            self.wfile.write(data)
+            try:
+                self.wfile.write(data)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
     with ThreadingHTTPServer((args.host, args.port), Handler) as server:
         notify_socket = os.environ.pop('NOTIFY_SOCKET', '')
         bound_host, bound_port = server.server_address
         host = bound_host if notify_socket else args.host
         url = f'http://{host}:{bound_port}'
-        cache.get()
+        cache.start()
         print(f"{'DEMO' if args.demo else 'LIVE'} {url}", flush=True)
         if notify_socket:
             if notify_socket.startswith('@'):
@@ -128,6 +145,8 @@ def main():
             server.serve_forever()
         except KeyboardInterrupt:
             pass
+        finally:
+            cache.stop()
 
 
 if __name__ == '__main__':

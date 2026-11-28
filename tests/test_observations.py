@@ -91,6 +91,18 @@ class ObservationTests(TestCase):
         self.assertEqual(next(r for r in result['runs'] if r['id'] == 201)['title'], retitled['display_title'])
         self.assertEqual(self.store.load()[0], NOW + 10)
 
+    def test_fast_active_refresh_reuses_cached_completed_runs(self):
+        self.collect(GitHub(self.api))
+        _, raw = self.store.load()
+        gh = GitHub(self.api, previous=raw)
+        self.api.calls.clear()
+        fast = gh.collect(refresh_history=False)
+        self.assertTrue(fast['history_available'])
+        completed_ids = {r['id'] for r in fast['runs'] if r['status'] == 'completed'}
+        self.assertEqual(completed_ids, {1, 2, 3, 201, 202, 203})
+        # Active runs were still refreshed without listing completed runs.
+        self.assertTrue(any('/attempts/' in path for path in self.api.calls))
+
     def test_incomplete_remote_list_preserves_stored_observation(self):
         github = GitHub(self.api)
         self.collect(github)

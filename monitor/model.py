@@ -4,6 +4,12 @@ import heapq
 import re
 
 POOLS = {'cubrid-arc-build': 'build', 'cubrid-arc': 'general', 'cubrid-arc-light': 'light'}
+POOL_LABELS = {'build': 'cubrid-arc-build', 'general': 'cubrid-arc', 'light': 'cubrid-arc-light'}
+POOL_CATEGORIES = {
+    'build': (('release', 'build (release)'), ('debug', 'build (debug)')),
+    'general': (('shell', 'shell'), ('sql', 'sql'), ('sql_by_cci', 'sql_by_cci')),
+    'light': (('plan', 'plan'), ('medium', 'medium'), ('collect', 'collect'), ('rerun', 'rerun')),
+}
 WAITING = {'queued', 'waiting', 'requested', 'pending'}
 
 
@@ -39,6 +45,31 @@ def pool(job):
     return next((POOLS[x] for x in job.get('labels', []) if x in POOLS), 'hosted' if any(x.startswith('ubuntu-') for x in job.get('labels', [])) else 'unknown')
 
 
+def pool_category(job_pool, job_name, job_stage):
+    lower = (job_name or '').lower()
+    if job_pool == 'build':
+        if 'release' in lower:
+            return 'release'
+        if 'debug' in lower:
+            return 'debug'
+        return 'other'
+    if job_pool == 'general':
+        if job_stage in ('shell', 'sql', 'sql_by_cci'):
+            return job_stage
+        return 'other'
+    if job_pool == 'light':
+        if job_stage == 'plan':
+            return 'plan'
+        if group(job_name) == 'collect':
+            return 'collect'
+        if job_stage == 'medium':
+            return 'medium'
+        if job_stage in ('shell', 'sql', 'sql_by_cci'):
+            return 'rerun'
+        return 'other'
+    return job_stage or 'other'
+
+
 def state(job):
     status, conclusion = job.get('status'), job.get('conclusion')
     if status in WAITING:
@@ -60,6 +91,92 @@ def unknown(reason, text):
 
 def window(start, end, samples, age):
     return {'kind': 'window', 'earliest': iso(start), 'latest': iso(end), 'samples': samples, 'sample_age_seconds': int(age)}
+
+
+def _run_summary(run):
+    return {
+        'id': run['id'],
+        'attempt': run['attempt'],
+        'pr': run['pr'],
+        'author': run['author'],
+        'develop_push': run['develop_push'],
+        'title': run['title'],
+        'created_at': run['created_at'],
+    }
+
+
+def _pool_breakdown(pool_name, all_jobs):
+    canonical = POOL_CATEGORIES[pool_name]
+    label_map = dict(canonical)
+    label_map['other'] = '기타'
+
+    cat_counts = defaultdict(lambda: [0, 0])
+    cat_runs = defaultdict(dict)
+    run_totals = {}
+    run_cats = defaultdict(lambda: defaultdict(lambda: [0, 0]))
+
+    for r, j in all_jobs:
+        st = j['state']
+        if st not in ('running', 'waiting'):
+            continue
+        cat = j['category']
+        idx = 0 if st == 'running' else 1
+        cat_counts[cat][idx] += 1
+        rid = (r['id'], r['attempt'])
+        if rid not in cat_runs[cat]:
+            cat_runs[cat][rid] = {**_run_summary(r), 'running': 0, 'waiting': 0, 'min_ahead': None}
+        cr = cat_runs[cat][rid]
+        cr[st] += 1
+        if st == 'waiting' and j.get('ahead') is not None:
+            cr['min_ahead'] = j['ahead'] if cr['min_ahead'] is None else min(cr['min_ahead'], j['ahead'])
+
+        if rid not in run_totals:
+            run_totals[rid] = {**_run_summary(r), 'running': 0, 'waiting': 0, 'min_ahead': None}
+        rt = run_totals[rid]
+        rt[st] += 1
+        if st == 'waiting' and j.get('ahead') is not None:
+            rt['min_ahead'] = j['ahead'] if rt['min_ahead'] is None else min(rt['min_ahead'], j['ahead'])
+        run_cats[rid][cat][idx] += 1
+
+    def sort_key(entry):
+        return (-entry['running'], entry['min_ahead'] if entry['min_ahead'] is not None else 10**9, entry['created_at'] or '')
+
+    ordered_keys = list(canonical)
+    if cat_counts['other'][0] or cat_counts['other'][1]:
+        ordered_keys.append(('other', '기타'))
+
+    breakdown = []
+    for key, label in ordered_keys:
+        running_n, waiting_n = cat_counts[key]
+        runs_list = sorted(cat_runs[key].values(), key=sort_key)
+        for item in runs_list:
+            item.pop('created_at', None)
+        breakdown.append({
+            'key': key,
+            'label': label,
+            'running': running_n,
+            'waiting': waiting_n,
+            'runs': runs_list,
+        })
+
+    order_index = {key: i for i, (key, _) in enumerate(ordered_keys)}
+    entries = []
+    for rid, rt in sorted(run_totals.items(), key=lambda kv: sort_key(kv[1])):
+        entry = dict(rt)
+        entry.pop('created_at', None)
+        cats = []
+        for ckey, counts in sorted(run_cats[rid].items(), key=lambda kv: order_index.get(kv[0], 99)):
+            if counts[0] or counts[1]:
+                cats.append({
+                    'key': ckey,
+                    'label': label_map.get(ckey, ckey),
+                    'running': counts[0],
+                    'waiting': counts[1],
+                })
+        entry['categories'] = cats
+        entries.append(entry)
+
+    return breakdown, entries
 
 
 def snapshot(raw, now, capacities, coverage=True):
@@ -88,6 +205,7 @@ def snapshot(raw, now, capacities, coverage=True):
         for original in run['jobs']:
             j = {k: original.get(k) for k in ('id', 'name', 'status', 'conclusion', 'created_at', 'started_at', 'completed_at', 'runner_name')}
             j['state'], j['pool'], j['stage'] = state(original), pool(original), stage(original.get('name'))
+            j['category'] = pool_category(j['pool'], j.get('name') or '', j['stage'])
             j['estimate'] = unknown('not_ready', '대기 중인 작업이 아닙니다')
             jobs.append(j)
         if not any(j['stage'] in ('build', 'plan', 'shell', 'sql', 'medium', 'sql_by_cci') and j['state'] not in ('skipped', 'cancelled') for j in jobs):
@@ -119,7 +237,12 @@ def snapshot(raw, now, capacities, coverage=True):
         reason = None
         if not coverage or any(not r['jobs_complete'] for r in active):
             reason = ('coverage', '활성 작업 수집이 불완전합니다')
-        elif any(j['state'] == 'unknown' or j['pool'] == 'unknown' for r in active for j in r['jobs']):
+        elif any(
+            j['state'] == 'unknown'
+            or (j['state'] in ('waiting', 'running') and j['pool'] == 'unknown')
+            for r in active
+            for j in r['jobs']
+        ):
             reason = ('unknown_jobs', '알 수 없는 작업 상태 또는 풀')
         elif not cap or len(running) > cap:
             reason = ('capacity', '풀 용량 설정을 확인하세요')
@@ -155,7 +278,17 @@ def snapshot(raw, now, capacities, coverage=True):
             j['finish'] = window(now+low+duration[0], now+high+duration[1], duration[2], duration[3])
             heapq.heappush(lower_slots, low+duration[0])
             heapq.heappush(upper_slots, high+duration[1])
-        pools.append({'name': p, 'capacity': cap, 'running': len(running), 'waiting': len(waiting), 'condition': unknown(*reason) if reason else {'kind': 'model', 'text': '생성 시각 순서 모델'}})
+        breakdown, entries = _pool_breakdown(p, all_jobs)
+        pools.append({
+            'name': p,
+            'label': POOL_LABELS[p],
+            'capacity': cap,
+            'running': len(running),
+            'waiting': len(waiting),
+            'condition': unknown(*reason) if reason else {'kind': 'model', 'text': '생성 시각 순서 모델'},
+            'breakdown': breakdown,
+            'entries': entries,
+        })
     def shape(run):
         return tuple(sorted(Counter((j['pool'], group(j['name'])) for j in run['jobs'] if j['state'] != 'skipped').items()))
 

@@ -1,3 +1,4 @@
+import time
 import unittest
 from copy import deepcopy
 from unittest.mock import patch
@@ -89,6 +90,68 @@ class ModelTests(unittest.TestCase):
             {'name':'gate', 'status':'completed', 'conclusion':'success', 'labels':['ubuntu-24.04']}]})
         self.assertNotIn(900, [r['id'] for r in snapshot(self.raw, NOW, CAPS)['runs']])
 
+    def test_skipped_empty_label_job_does_not_block_pool_estimates(self):
+        run = next(r for r in self.raw['runs'] if r['id'] == 103)
+        run['jobs'].append({
+            'id': 9999,
+            'name': 'sql_by_cci / shard ${{ matrix.suite }} ${{ matrix.i }}',
+            'status': 'completed',
+            'conclusion': 'skipped',
+            'labels': [],
+            'created_at': iso(NOW - 30),
+        })
+        result = snapshot(self.raw, NOW, CAPS)
+        pools = {p['name']: p for p in result['pools']}
+        self.assertEqual(pools['light']['condition']['kind'], 'model')
+        self.assertNotEqual(pools['build']['condition'].get('reason'), 'unknown_jobs')
+        updated_103 = next(r for r in result['runs'] if r['id'] == 103)
+        self.assertEqual(updated_103['completion']['kind'], 'window')
+
+    def test_pool_breakdown_and_entries(self):
+        self.raw['runs'].append({
+            'id': 105,
+            'run_attempt': 1,
+            'status': 'in_progress',
+            'display_title': 'PR #8605 · 세부 풀 분류',
+            'pr': 8605,
+            'author': 'tester',
+            'created_at': iso(NOW - 20),
+            'jobs': [
+                {'id': 1051, 'name': 'build (debug)', 'labels': ['cubrid-arc-build'], 'status': 'queued', 'created_at': iso(NOW - 10)},
+                {'id': 1052, 'name': 'sql / shard sql 01', 'labels': ['cubrid-arc'], 'status': 'in_progress', 'created_at': iso(NOW - 15), 'started_at': iso(NOW - 10)},
+                {'id': 1053, 'name': 'sql_by_cci / shard sql_by_cci 00', 'labels': ['cubrid-arc'], 'status': 'queued', 'created_at': iso(NOW - 5)},
+                {'id': 1054, 'name': 'shell / collect', 'labels': ['cubrid-arc-light'], 'status': 'in_progress', 'created_at': iso(NOW - 15), 'started_at': iso(NOW - 10)},
+                {'id': 1055, 'name': 'shell / shard shell 02', 'labels': ['cubrid-arc-light'], 'status': 'queued', 'created_at': iso(NOW - 5)},
+                {'id': 1056, 'name': 'plan', 'labels': ['cubrid-arc-light'], 'status': 'queued', 'created_at': iso(NOW - 5)},
+            ],
+        })
+        result = snapshot(self.raw, NOW, CAPS)
+        pools = {p['name']: p for p in result['pools']}
+
+        self.assertEqual(pools['build']['label'], 'cubrid-arc-build')
+        build_cats = {c['key']: c for c in pools['build']['breakdown']}
+        self.assertEqual(build_cats['release']['running'], 1)
+        self.assertEqual(build_cats['release']['waiting'], 1)
+        self.assertEqual(build_cats['debug']['waiting'], 1)
+
+        self.assertEqual(pools['general']['label'], 'cubrid-arc')
+        gen_cats = {c['key']: c for c in pools['general']['breakdown']}
+        self.assertEqual(gen_cats['shell']['waiting'], 1)
+        self.assertEqual(gen_cats['sql']['running'], 1)
+        self.assertEqual(gen_cats['sql_by_cci']['waiting'], 1)
+
+        self.assertEqual(pools['light']['label'], 'cubrid-arc-light')
+        light_cats = {c['key']: c for c in pools['light']['breakdown']}
+        self.assertEqual(light_cats['plan']['waiting'], 1)
+        self.assertEqual(light_cats['medium']['waiting'], 3)
+        self.assertEqual(light_cats['collect']['running'], 1)
+        self.assertEqual(light_cats['rerun']['waiting'], 1)
+
+        entry_105 = next(e for e in pools['light']['entries'] if e['id'] == 105)
+        self.assertEqual(entry_105['running'], 1)
+        self.assertEqual(entry_105['waiting'], 2)
+        self.assertEqual([c['key'] for c in entry_105['categories']], ['plan', 'collect', 'rerun'])
+
 
 class AcquisitionTests(unittest.TestCase):
     def test_attempt_and_all_job_pages(self):
@@ -118,6 +181,44 @@ class AcquisitionTests(unittest.TestCase):
         self.assertFalse(data['coverage'])
         self.assertIn('300', data['warnings'][0])
 
+    def test_collect_skips_skipped_completed_runs_and_caches_failed_completed(self):
+        calls = []
+        def api(path):
+            calls.append(path)
+            if path == 'user':
+                return {'login': 'vimkim'}
+            if 'status=completed' in path:
+                return {'workflow_runs': [
+                    {'id': 1, 'run_attempt': 1, 'status': 'completed', 'conclusion': 'skipped', 'display_title': 'PR #111'},
+                    {'id': 2, 'run_attempt': 1, 'status': 'completed', 'conclusion': 'success', 'updated_at': 'u2', 'display_title': 'PR #222'},
+                    {'id': 3, 'run_attempt': 2, 'status': 'completed', 'conclusion': 'failure', 'updated_at': 'u3', 'display_title': 'PR #333'},
+                ]}
+            if '/workflows/' in path:
+                return {'workflow_runs': []}
+            if '/runs/2/attempts/1/jobs' in path:
+                return {'jobs': [{'id': 20, 'name': 'build (release)', 'status': 'completed', 'conclusion': 'success', 'labels': ['cubrid-arc-build']}]}
+            if '/runs/3/attempts/2/jobs' in path:
+                raise RuntimeError('gh: Server Error (HTTP 502)')
+            if '/pulls/222' in path:
+                return {'user': {'login': 'alice'}}
+            if '/pulls/333' in path:
+                return {'user': {'login': 'bob'}}
+            raise AssertionError(f'unexpected call: {path}')
+
+        gh = GitHub(api)
+        first = gh.collect()
+        self.assertEqual([r['id'] for r in sorted(first['runs'], key=lambda x: x['id'])], [2, 3])
+        self.assertFalse(any('/pulls/111' in c or '/runs/1/' in c for c in calls))
+        # Completed runs skip redundant GET /actions/runs/{id}
+        self.assertFalse(any(c.endswith('/actions/runs/2') or c.endswith('/actions/runs/3') for c in calls))
+
+        calls.clear()
+        second = gh.collect()
+        self.assertEqual(len(second['runs']), 2)
+        # user is cached, run 2 is cached, and run 3 (502) is in cooldown so neither /jobs nor /user is called!
+        self.assertFalse(any('/jobs' in c or c == 'user' or '/pulls/' in c for c in calls))
+        self.assertTrue(any('재시도 대기' in w for w in second['warnings']))
+
     def test_model_clock_is_read_after_collection(self):
         clock = {'now': NOW}
         class SlowGitHub:
@@ -139,6 +240,29 @@ class AcquisitionTests(unittest.TestCase):
         cache.refresh()
         self.assertEqual(cache.value, {'observed_at':'old'})
         self.assertEqual(cache.error, 'offline')
+
+    def test_snapshot_cache_background_polling_and_retry_backoff(self):
+        results = iter([RuntimeError('boom'), {'runs': [], 'observed_at': 'ok'}])
+        def loader():
+            item = next(results, {'runs': [], 'observed_at': 'ok'})
+            if isinstance(item, Exception):
+                raise item
+            return item
+        cache = SnapshotCache(loader, interval=0.05, retry_intervals=(0.02,), active_interval=None)
+        cache.start()
+        try:
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                value, error, _ = cache.get()
+                if value == {'runs': [], 'observed_at': 'ok'} and error is None:
+                    break
+                time.sleep(0.01)
+            value, error, _ = cache.get()
+            self.assertEqual(value, {'runs': [], 'observed_at': 'ok'})
+            self.assertIsNone(error)
+            self.assertIsNotNone(cache.meta()['duration_ms'])
+        finally:
+            cache.stop()
 
 
 if __name__ == '__main__': unittest.main()

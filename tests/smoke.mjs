@@ -22,6 +22,21 @@ try {
   await page.goto(url);
   await page.getByText('DEMO · 실제 GitHub 데이터가 아닌 예시입니다.').waitFor();
   await page.getByText('테스트 계획 확인').waitFor();
+  const poolsText = await page.locator('#pools').innerText();
+  assert.match(poolsText, /cubrid-arc-build/);
+  assert.match(poolsText, /cubrid-arc/);
+  assert.match(poolsText, /cubrid-arc-light/);
+  assert.match(poolsText, /build \(release\)/);
+  assert.match(poolsText, /shell/);
+  assert.match(poolsText, /medium/);
+  const lightPool = page.locator('.pool').filter({hasText: 'cubrid-arc-light'});
+  await lightPool.locator('.pool-entries summary').click();
+  assert.match(await lightPool.locator('.pool-entry-list').innerText(), /#8601/);
+  await lightPool.locator('.pool-cat').filter({hasText: 'medium'}).click();
+  assert.match(await page.locator('#active-filters').innerText(), /라이트 · medium/);
+  assert.equal(await page.locator('#active .run').count(), 3);
+  await page.locator('#clear').click();
+  assert.equal(await page.locator('#active .run').count(), 5);
   const eligible = page.locator('.run').filter({hasText:'테스트 계획 확인'});
   assert.match(await eligible.innerText(), /조건부 시나리오/);
   const notStarted = page.locator('.run').filter({hasText:'medium 시작 대기'});
@@ -103,7 +118,7 @@ try {
   await page.reload();
   await page.getByText('GitHub 데이터를 읽지 못했습니다: offline').waitFor();
   assert.deepEqual(errors, []);
-  console.log('Headless smoke passed: demo, forecasts, stale and partial data, filters, author grouping, develop pushes, persistence, details, mobile, errors.');
+  console.log('Headless smoke passed: demo, pools breakdown, forecasts, stale and partial data, filters, author grouping, develop pushes, persistence, details, mobile, errors.');
 } finally {
   if (browser) await browser.close();
   server.kill('SIGTERM');
