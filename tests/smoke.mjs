@@ -22,6 +22,8 @@ try {
   await page.goto(url);
   await page.getByText('DEMO · 실제 GitHub 데이터가 아닌 예시입니다.').waitFor();
   await page.getByText('테스트 계획 확인').waitFor();
+  await page.getByText('5분마다 자동 갱신').waitFor();
+  await page.locator('#refresh-now').click();
   const poolsText = await page.locator('#pools').innerText();
   assert.match(poolsText, /cubrid-arc-build/);
   assert.match(poolsText, /cubrid-arc/);
@@ -92,7 +94,8 @@ try {
   assert.deepEqual(errors, []);
   const fresh = await page.evaluate(async () => (await fetch('/api/snapshot')).json());
   const stale = structuredClone(fresh);
-  stale.snapshot.observed_at = new Date(Date.now() - 600000).toISOString();
+  const staleMs = (fresh.refresh?.stale_after_seconds || 180) * 1000 + 60000;
+  stale.snapshot.observed_at = new Date(Date.now() - staleMs).toISOString();
   await page.route('**/api/snapshot', route => route.fulfill({status:200, contentType:'application/json', body:JSON.stringify(stale)}));
   await page.reload();
   await page.getByText('관측 데이터가 오래되었습니다.', {exact:false}).waitFor();

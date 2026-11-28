@@ -10,7 +10,7 @@ Python 3.11 이상과 인증된 GitHub CLI가 필요합니다. 브라우저에�
 just serve
 ```
 
-출력된 `http://127.0.0.1:8765`를 엽니다. 처음에는 GitHub에서 실행과 작업 상세를 수집합니다. 재시작하면 SQLite의 최근 관측값을 바로 표시하고, 백그라운드 폴링 스레드가 활성 실행을 먼저 갱신한 뒤 완료 이력을 주기적으로 갱신합니다. 같은 완료 시도의 상세는 재사용하고 스킵된 gate-only 완료 실행은 건너뜁니다. 대시보드를 열어두지 않아도 백그라운드에서 활성 실행(45초)과 유휴 상태(60초) 주기로 최신 스냅샷을 유지합니다.
+출력된 `http://127.0.0.1:8765`를 엽니다. 처음에는 GitHub에서 실행과 작업 상세를 수집합니다. 재시작하면 SQLite의 최근 관측값을 바로 표시하고, 백그라운드 폴링 스레드가 활성 실행을 먼저 갱신한 뒤 완료 이력을 주기적으로 갱신합니다. 같은 완료 시도의 상세는 재사용하고 스킵된 gate-only 완료 실행은 건너뛰며 `ETag` 조건부 요청(`304`)으로 API 사용량을 절약합니다. 기본 자동 갱신 주기는 5분(`--interval 300`, 30~3600초 설정 가능)이며 화면 상단의 `지금 갱신` 버튼으로 수동 갱신할 수 있습니다.
 
 러너 풀 카드(`cubrid-arc-build`, `cubrid-arc`, `cubrid-arc-light`)에서는 풀별 사용률, 워크로드 유형별(`build (release/debug)`, `shell`/`sql`/`sql_by_cci`, `plan`/`medium`/`collect`/`rerun`) 실행·대기 수와 점유·대기 중인 실행 내역을 확인할 수 있습니다. 각 유형을 클릭하면 활성 실행 목록을 해당 작업으로 필터링합니다.
 
@@ -32,7 +32,7 @@ Linux에서 systemd 사용자 서비스 관리자가 실행 중이면 `just up`�
 
 시작 명령은 대시보드가 포트를 열 때까지 기다린 뒤 접속 URL을 표시합니다. 나중에 실행 상태와 URL을 확인하려면 `just status`를 실행합니다. 모든 IPv4 인터페이스에서 접속을 받는 경우 로컬 URL과 확인 가능한 인터페이스의 URL을 표시합니다.
 
-세 시작 명령은 현재 사용자의 `cubrid-gha-monitor.service`를 공유합니다. 영구 유닛(`just install`) 설치 후 `just up-dev2`나 `just up-for-all`, 또는 `just up --host ... --port ... --build-capacity ...`를 실행하면 `service.env`를 갱신하고 서비스를 재시작합니다. 재시작만 하려면 `just restart`를 실행합니다. 임시 실행(`just install` 미설치) 중 시작 옵션을 바꾸려면 `just down`으로 종료한 뒤 `just up --port 9000`처럼 다시 시작합니다.
+세 시작 명령은 현재 사용자의 `cubrid-gha-monitor.service`를 공유합니다. 영구 유닛(`just install`) 설치 후 `just up-dev2`, `just up-for-all`, 또는 `just up --host ... --port ... --interval 600`을 실행하면 `service.env`를 갱신하고 서비스를 재시작합니다. 재시작만 하려면 `just restart`를 실행합니다. 임시 실행(`just install` 미설치) 중 시작 옵션을 바꾸려면 `just down`으로 종료한 뒤 `just up --port 9000`처럼 다시 시작합니다.
 
 서비스 상세 상태는 `systemctl --user status cubrid-gha-monitor.service`로 확인합니다. 최근 로그는 `just logs`로 확인합니다.
 
@@ -42,9 +42,9 @@ Linux에서 systemd 사용자 서비스 관리자가 실행 중이면 `just up`�
 사용자 유닛이 설치됩니다. 실행 중인 임시 서비스는 계속 동작합니다.
 전환할 때는 사용이 끝난 뒤 `just down`을 실행하고 `just up`(또는 `just up-dev2` / `just up-for-all`)으로 설치된 유닛을 시작합니다.
 
-설치된 유닛은 기본적으로 `127.0.0.1:8765`에 바인딩합니다. 주소, 포트, 풀 용량을
+설치된 유닛은 기본적으로 `127.0.0.1:8765`에 바인딩합니다. 주소, 포트, 갱신 주기, 풀 용량을
 수동으로 바꾸려면 `${XDG_CONFIG_HOME:-$HOME/.config}/cubrid-gha-monitor/service.env`에
-`MONITOR_HOST`, `MONITOR_PORT`, `MONITOR_BUILD_CAPACITY`, `MONITOR_GENERAL_CAPACITY`, `MONITOR_LIGHT_CAPACITY`를 `NAME=value` 형식으로 설정한 뒤 `just restart`를 실행합니다.
+`MONITOR_HOST`, `MONITOR_PORT`, `MONITOR_INTERVAL`, `MONITOR_BUILD_CAPACITY`, `MONITOR_GENERAL_CAPACITY`, `MONITOR_LIGHT_CAPACITY`를 `NAME=value` 형식으로 설정한 뒤 `just restart`를 실행합니다.
 필요하면 `GH_CONFIG_DIR`이나 `XDG_CACHE_HOME`도 이 파일에 설정합니다.
 인증에는 서비스 사용자 계정의 GitHub CLI 설정을 사용합니다.
 

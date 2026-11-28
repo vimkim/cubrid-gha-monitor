@@ -73,6 +73,9 @@ up *args: && status
                 --port)
                     [[ "$#" -ge 2 ]] || { echo "Missing value for $1" >&2; exit 2; }
                     updates[MONITOR_PORT]=$2; shift 2 ;;
+                --interval)
+                    [[ "$#" -ge 2 ]] || { echo "Missing value for $1" >&2; exit 2; }
+                    updates[MONITOR_INTERVAL]=$2; shift 2 ;;
                 --build-capacity)
                     [[ "$#" -ge 2 ]] || { echo "Missing value for $1" >&2; exit 2; }
                     updates[MONITOR_BUILD_CAPACITY]=$2; shift 2 ;;
@@ -84,7 +87,7 @@ up *args: && status
                     updates[MONITOR_LIGHT_CAPACITY]=$2; shift 2 ;;
                 *)
                     echo "Unsupported option for installed unit: $1" >&2
-                    echo "Supported: --host --port --build-capacity --general-capacity --light-capacity" >&2
+                    echo "Supported: --host --port --interval --build-capacity --general-capacity --light-capacity" >&2
                     exit 2 ;;
             esac
         done
@@ -99,7 +102,7 @@ up *args: && status
                 printf '%s\n' "$line" >> "$tmp"
             done < "$env_file"
         fi
-        for key in MONITOR_HOST MONITOR_PORT MONITOR_BUILD_CAPACITY MONITOR_GENERAL_CAPACITY MONITOR_LIGHT_CAPACITY; do
+        for key in MONITOR_HOST MONITOR_PORT MONITOR_INTERVAL MONITOR_BUILD_CAPACITY MONITOR_GENERAL_CAPACITY MONITOR_LIGHT_CAPACITY; do
             if [[ -v updates["$key"] ]]; then
                 printf '%s=%s\n' "$key" "${updates[$key]}" >> "$tmp"
             fi

@@ -7,7 +7,7 @@ from unittest.mock import patch
 from monitor.demo import fixture
 from monitor.github import GitHub, GitHubRateLimitError, SnapshotCache
 from monitor.model import iso, snapshot, state
-from monitor.server import collect_snapshot, safe_snapshot
+from monitor.server import collect_snapshot, safe_snapshot, stale_after_seconds
 
 NOW = 1800000000
 CAPS = {'build': 8, 'general': 174, 'light': 20}
@@ -371,6 +371,42 @@ class AcquisitionTests(unittest.TestCase):
         self.assertEqual(second, {'login': 'vimkim'})
         self.assertNotIn('If-None-Match', sent_headers[0])
         self.assertEqual(sent_headers[1].get('If-None-Match'), '"abc"')
+
+    def test_dynamic_stale_threshold_and_manual_trigger(self):
+        self.assertEqual(stale_after_seconds(300), 660)
+        self.assertEqual(stale_after_seconds(60), 180)
+        raw = fixture(NOW)
+        from monitor.model import snapshot
+        snap = snapshot(raw, NOW, CAPS)
+        not_stale = safe_snapshot(snap, None, NOW + 350, stale_after=660)
+        self.assertEqual(next(r for r in not_stale['runs'] if r['id'] == 103)['completion']['kind'], 'window')
+        stale = safe_snapshot(snap, None, NOW + 661, stale_after=660)
+        self.assertEqual(next(r for r in stale['runs'] if r['id'] == 103)['completion']['reason'], 'stale')
+
+        calls = 0
+        def loader():
+            nonlocal calls
+            calls += 1
+            return {'runs': [], 'observed_at': f'call-{calls}'}
+
+        cache = SnapshotCache(loader, interval=300, active_interval=None, stale_after=660)
+        cache.start()
+        try:
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline and calls < 1:
+                time.sleep(0.01)
+            self.assertEqual(calls, 1)
+            # Inside cooldown, trigger returns False
+            self.assertEqual(cache.trigger(min_cooldown=60), (False, False))
+            # Bypass cooldown: trigger wakes the sleeping loop immediately
+            self.assertEqual(cache.trigger(min_cooldown=0), (True, False))
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline and calls < 2:
+                time.sleep(0.01)
+            self.assertEqual(calls, 2)
+            self.assertEqual(cache.meta()['stale_after_seconds'], 660)
+        finally:
+            cache.stop()
 
 
 if __name__ == '__main__': unittest.main()

@@ -461,14 +461,15 @@ class GitHub:
 
 
 class SnapshotCache:
-    def __init__(self, loader, interval=60, initial=None, retry_intervals=(10, 20, 40, 60),
-                 active_interval=45, followup_checker=None, rate_limit_getter=None):
+    def __init__(self, loader, interval=300, initial=None, retry_intervals=(10, 20, 40, 60),
+                 active_interval=None, followup_checker=None, rate_limit_getter=None, stale_after=None):
         self.loader = loader
         self.interval = interval
         self.retry_intervals = tuple(retry_intervals)
         self.active_interval = active_interval
         self.followup_checker = followup_checker
         self.rate_limit_getter = rate_limit_getter
+        self.stale_after = stale_after if stale_after is not None else (max(180, int(interval) * 2 + 60) if interval > 0 else 180)
         self.value, self.error, self.updated = initial, None, None
         self.last_duration = None
         self.next_refresh = None
@@ -478,6 +479,7 @@ class SnapshotCache:
         self.loading = False
         self._started = False
         self._stop = threading.Event()
+        self._wake = threading.Event()
         self._thread = None
 
     def start(self):
@@ -486,15 +488,32 @@ class SnapshotCache:
                 return
             self._started = True
             self._stop.clear()
+            self._wake.clear()
             self.loading = True
             self._thread = threading.Thread(target=self._loop, daemon=True)
             self._thread.start()
 
     def stop(self, timeout=2):
         self._stop.set()
+        self._wake.set()
         thread = self._thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=timeout)
+
+    def trigger(self, min_cooldown=15):
+        with self.lock:
+            if self.loading:
+                return False, True
+            if self.updated is not None and time.monotonic() - self.updated < min_cooldown:
+                return False, False
+            if self.rate_limited_until is not None and time.time() < self.rate_limited_until:
+                return False, False
+            if self._started:
+                self._wake.set()
+                return True, False
+            self.loading = True
+            threading.Thread(target=self.refresh, daemon=True).start()
+            return True, True
 
     def _next_delay(self):
         with self.lock:
@@ -517,7 +536,7 @@ class SnapshotCache:
         if self.rate_limit_getter is not None:
             remaining, _ = self.rate_limit_getter()
             if remaining is not None and remaining < 500:
-                target = max(target, 120.0)
+                target = max(target, 300.0)
         if target <= 0:
             return 0.0
         return max(10.0, target - duration)
@@ -528,7 +547,9 @@ class SnapshotCache:
             delay = self._next_delay()
             with self.lock:
                 self.next_refresh = time.time() + delay
-            if self._stop.wait(delay):
+            self._wake.wait(delay)
+            self._wake.clear()
+            if self._stop.is_set():
                 break
 
     def get(self):
@@ -548,6 +569,7 @@ class SnapshotCache:
                 'next_refresh_at': _iso(self.next_refresh) if self.next_refresh is not None else None,
                 'consecutive_errors': self.consecutive_errors,
                 'interval_seconds': self.interval,
+                'stale_after_seconds': self.stale_after,
                 'rate_limit_remaining': remaining,
                 'rate_limit_reset_at': _iso(reset_at) if reset_at is not None else None,
             }

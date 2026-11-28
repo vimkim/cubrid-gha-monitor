@@ -237,25 +237,47 @@ function renderRuns() {
   }
   $('count').textContent = `${visibleCount}건`;
 }
+let refreshTimer = null;
+function formatInterval(seconds) {
+  if (!seconds || seconds <= 0) return '백그라운드 자동 갱신';
+  return seconds % 60 === 0 ? `${seconds / 60}분마다 자동 갱신` : `${seconds}초마다 자동 갱신`;
+}
 async function refresh() {
+  if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
+  let loading = false;
   try {
     const response = await fetch('/api/snapshot', {cache:'no-store'}); if (!response.ok) throw Error(`HTTP ${response.status}`);
     const data = await response.json();
+    loading = Boolean(data.loading);
+    const btn = $('refresh-now');
+    if (btn) { btn.disabled = loading; btn.textContent = loading ? '갱신 중...' : '지금 갱신'; }
+    if (data.refresh?.interval_seconds != null && $('poll-cadence')) {
+      $('poll-cadence').textContent = formatInterval(data.refresh.interval_seconds);
+    }
     if (data.snapshot) {
       snapshot = data.snapshot;
-      const stale = Date.now() - new Date(snapshot.observed_at).getTime() > 180000;
+      const staleMs = (data.refresh?.stale_after_seconds ?? 180) * 1000;
+      const stale = Date.now() - new Date(snapshot.observed_at).getTime() > staleMs;
       estimateUnavailable = data.error ? '최근 갱신 실패' : !snapshot.coverage ? '활성 작업 수집 불완전' : stale ? '관측 데이터가 오래됨' : null;
       const dur = data.refresh?.duration_ms != null ? ` · 수집 ${(data.refresh.duration_ms / 1000).toFixed(1)}초` : '';
-      $('freshness').textContent = `${snapshot.source === 'demo' ? 'DEMO' : 'LIVE'} · ${age(snapshot.observed_at)} 관측${dur}${snapshot.coverage ? '' : ' · 수집 불완전'}${data.loading ? ' · 갱신 중' : ''}`;
+      $('freshness').textContent = `${snapshot.source === 'demo' ? 'DEMO' : 'LIVE'} · ${age(snapshot.observed_at)} 관측${dur}${snapshot.coverage ? '' : ' · 수집 불완전'}${loading ? ' · 갱신 중' : ''}`;
       $('freshness').title = `관측 ${time(snapshot.observed_at)} (서울)`;
       const alerts = $('alerts'); alerts.replaceChildren();
       if (snapshot.source === 'demo') add(alerts, 'div', 'DEMO · 실제 GitHub 데이터가 아닌 예시입니다.', 'alert');
       if (data.error) add(alerts, 'div', `갱신 실패. 이전 데이터를 표시합니다: ${data.error}`, 'alert');
-      if (stale) add(alerts, 'div', data.loading ? '관측 데이터가 오래되었습니다. 최신 데이터를 수집하는 중이며 완료 전까지 예상은 표시되지 않습니다.' : '관측 데이터가 오래되었습니다. 예상은 현재 상황과 다를 수 있습니다.', 'alert');
+      if (stale) add(alerts, 'div', loading ? '관측 데이터가 오래되었습니다. 최신 데이터를 수집하는 중이며 완료 전까지 예상은 표시되지 않습니다.' : '관측 데이터가 오래되었습니다. 예상은 현재 상황과 다를 수 있습니다.', 'alert');
       if (!snapshot.coverage || snapshot.warnings.length) add(alerts, 'div', `수집 주의: ${snapshot.warnings.slice(0, 4).join(' · ') || '활성 작업 수집 불완전'}${snapshot.warnings.length > 4 ? ` 외 ${snapshot.warnings.length-4}건` : ''}`, 'alert');
       renderPools(); renderRuns();
     } else if (data.error) { $('freshness').textContent = '데이터 수집 실패'; $('alerts').replaceChildren(node('div', `GitHub 데이터를 읽지 못했습니다: ${data.error}`, 'alert')); }
   } catch (e) { $('freshness').textContent = '연결 오류'; $('alerts').replaceChildren(node('div', `서버 연결 실패: ${e.message}`, 'alert')); }
-  setTimeout(refresh, snapshot ? 10000 : 1500);
+  refreshTimer = setTimeout(refresh, loading ? 2000 : snapshot ? 15000 : 1500);
+}
+if ($('refresh-now')) {
+  $('refresh-now').addEventListener('click', async () => {
+    const btn = $('refresh-now');
+    btn.disabled = true;
+    try { await fetch('/api/refresh', {method: 'POST'}); } catch (_) {}
+    refresh();
+  });
 }
 refresh();
