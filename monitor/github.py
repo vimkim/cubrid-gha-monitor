@@ -1,5 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import gzip
 import http.client
 import json
@@ -21,12 +21,37 @@ TOKEN_TTL = 1800
 FAILED_COMPLETED_TTL = 1800
 HISTORY_REFRESH_INTERVAL = 180
 MAX_WORKERS = 10
+ETAG_CACHE_LIMIT = 512
+KST = timezone(timedelta(hours=9))
 
 
 class GitHubAPIError(RuntimeError):
     def __init__(self, message, status=None):
         super().__init__(message)
         self.status = status
+
+
+class GitHubRateLimitError(GitHubAPIError):
+    def __init__(self, message, status=403, reset_at=None):
+        super().__init__(message, status=status)
+        self.reset_at = reset_at
+
+
+def _rate_limit_message(reset_at):
+    if reset_at is not None:
+        kst_str = datetime.fromtimestamp(reset_at, KST).strftime('%H:%M:%S KST')
+        return f'GitHub API 요청 한도 초과 ({kst_str} 초기화 예정)'
+    return 'GitHub API 요청 한도 초과'
+
+
+def _int_header(resp, name):
+    raw = resp.getheader(name)
+    if raw is None:
+        return None
+    try:
+        return int(raw.strip())
+    except ValueError:
+        return None
 
 
 def reusable_attempt(run):
@@ -53,6 +78,11 @@ class GitHub:
         self.failed_completed = {}
         self.viewer_cache = None
         self.needs_history_followup = False
+        self._did_startup_fast_pass = False
+        self.rate_limit_remaining = None
+        self.rate_limit_reset = None
+        self.rate_limited_until = None
+        self._etags = {}
         self.lock = threading.Lock()
         self._token_lock = threading.Lock()
         self._token = None
@@ -92,6 +122,11 @@ class GitHub:
             self._local.conn = None
 
     def _http_get(self, path):
+        with self.lock:
+            limited_until = self.rate_limited_until
+        if limited_until is not None and time.time() < limited_until:
+            raise GitHubRateLimitError(_rate_limit_message(limited_until), status=403, reset_at=limited_until)
+
         token = self._get_token()
         if not token:
             return self.gh(path)
@@ -102,6 +137,8 @@ class GitHub:
             if conn is None:
                 conn = http.client.HTTPSConnection('api.github.com', timeout=25)
                 self._local.conn = conn
+            with self.lock:
+                cached_etag = self._etags.get(req_path)
             headers = {
                 'Authorization': f'Bearer {token}',
                 'Accept': 'application/vnd.github+json',
@@ -110,6 +147,8 @@ class GitHub:
                 'User-Agent': 'cubrid-gha-monitor',
                 'Connection': 'keep-alive',
             }
+            if cached_etag is not None:
+                headers['If-None-Match'] = cached_etag[0]
             try:
                 conn.request('GET', req_path, headers=headers)
                 resp = conn.getresponse()
@@ -117,6 +156,10 @@ class GitHub:
                 status = resp.status
                 encoding = (resp.getheader('Content-Encoding') or '').lower()
                 conn_hdr = (resp.getheader('Connection') or '').lower()
+                etag_hdr = resp.getheader('ETag')
+                remaining = _int_header(resp, 'X-RateLimit-Remaining')
+                reset_hdr = _int_header(resp, 'X-RateLimit-Reset')
+                retry_after = _int_header(resp, 'Retry-After')
             except (http.client.HTTPException, OSError, TimeoutError) as exc:
                 self._close_conn()
                 if attempt < 2:
@@ -124,6 +167,17 @@ class GitHub:
                 raise GitHubAPIError(f'gh: {exc}') from exc
             if conn_hdr == 'close':
                 self._close_conn()
+
+            with self.lock:
+                if remaining is not None:
+                    self.rate_limit_remaining = remaining
+                if reset_hdr is not None:
+                    self.rate_limit_reset = float(reset_hdr)
+                if status < 400 and (remaining is None or remaining > 0):
+                    self.rate_limited_until = None
+
+            if status == 304 and cached_etag is not None:
+                return cached_etag[1]
             if encoding == 'gzip':
                 body = gzip.decompress(body)
             if status == 401 and not refreshed:
@@ -139,8 +193,30 @@ class GitHub:
                     msg = payload.get('message') or ''
                 except ValueError:
                     msg = body.decode('utf-8', 'replace').strip()
+                if status in (403, 429) and (
+                    remaining == 0 or status == 429 or 'rate limit' in msg.lower() or retry_after is not None
+                ):
+                    now_ts = time.time()
+                    if retry_after is not None:
+                        reset_at = now_ts + retry_after + 2
+                    elif reset_hdr is not None:
+                        reset_at = max(float(reset_hdr + 2), now_ts + 10)
+                    else:
+                        reset_at = now_ts + 60
+                    with self.lock:
+                        self.rate_limited_until = reset_at
+                    raise GitHubRateLimitError(_rate_limit_message(reset_at), status=status, reset_at=reset_at)
                 raise GitHubAPIError(f'gh: HTTP {status}: {msg[:240]}', status=status)
-            return json.loads(body.decode('utf-8'))
+
+            parsed = json.loads(body.decode('utf-8'))
+            if status == 200 and etag_hdr:
+                with self.lock:
+                    if req_path in self._etags:
+                        del self._etags[req_path]
+                    elif len(self._etags) >= ETAG_CACHE_LIMIT:
+                        self._etags.pop(next(iter(self._etags)), None)
+                    self._etags[req_path] = (etag_hdr, parsed)
+            return parsed
         raise GitHubAPIError('gh: request retries exhausted')
 
     def pages(self, path, key, limit):
@@ -198,6 +274,8 @@ class GitHub:
                 latest = self.api(f'{BASE}/actions/runs/{key[0]}')
                 if latest['run_attempt'] != key[1]:
                     raise RuntimeError(f'run {key[0]} attempt changed during scan')
+        except GitHubRateLimitError:
+            raise
         except Exception as exc:
             if is_completed:
                 with self.lock:
@@ -230,23 +308,33 @@ class GitHub:
             has_history = bool(self.last_completed_runs)
             last_history_at = self.last_history_at
             prev_active_ids = set(self.last_active_ids)
+            needs_followup = self.needs_history_followup
+            did_fast = self._did_startup_fast_pass
+        if needs_followup:
+            with self.lock:
+                self.needs_history_followup = False
+            return self.collect(refresh_history=True)
         if last_history_at is None:
-            if has_history:
-                raw = self.collect(refresh_history=False)
-                self.needs_history_followup = True
-                return raw
-            self.needs_history_followup = False
+            if has_history and not did_fast:
+                with self.lock:
+                    self._did_startup_fast_pass = True
+                    self.needs_history_followup = True
+                return self.collect(refresh_history=False)
+            with self.lock:
+                self.needs_history_followup = False
             return self.collect(refresh_history=True)
         if self.should_refresh_history():
-            self.needs_history_followup = False
+            with self.lock:
+                self.needs_history_followup = False
             return self.collect(refresh_history=True)
         raw = self.collect(refresh_history=False)
         current_active_ids = {r['id'] for r in raw['runs'] if r.get('status') != 'completed'}
         if prev_active_ids - current_active_ids:
-            # An active run finished or disappeared; refresh completed history now.
-            self.needs_history_followup = False
+            with self.lock:
+                self.needs_history_followup = False
             return self.collect(refresh_history=True)
-        self.needs_history_followup = False
+        with self.lock:
+            self.needs_history_followup = False
         return raw
 
     def _list_status(self, status):
@@ -258,6 +346,7 @@ class GitHub:
         warnings, runs, complete = [], {}, True
         statuses = (*ACTIVE, 'completed') if refresh_history else ACTIVE
         history_available = True if refresh_history else (bool(self.last_completed_runs) or self.last_history_at is not None)
+        rate_limit_exc = None
 
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             list_futures = {executor.submit(self._list_status, status): status for status in statuses}
@@ -274,6 +363,8 @@ class GitHub:
                         existing = runs.get(run['id'])
                         if existing is None or run['run_attempt'] >= existing['run_attempt']:
                             runs[run['id']] = {field: run[field] for field in RUN_FIELDS if field in run}
+                except GitHubRateLimitError as exc:
+                    rate_limit_exc = exc
                 except Exception as exc:
                     if status == 'completed':
                         history_available = False
@@ -281,8 +372,13 @@ class GitHub:
                         complete = False
                     warnings.append(f'{status}: {exc}')
 
+            if rate_limit_exc is not None:
+                raise rate_limit_exc
+
             try:
                 viewer = viewer_future.result()
+            except GitHubRateLimitError as exc:
+                raise exc
             except Exception as exc:
                 viewer = None
                 warnings.append(f'사용자 정보: {exc}')
@@ -307,6 +403,8 @@ class GitHub:
                         complete = False
                         warnings.append(f"실행 {run['id']}: 작업 페이지 제한")
                     result.append(item)
+                except GitHubRateLimitError as exc:
+                    rate_limit_exc = exc
                 except Exception as exc:
                     if run['status'] != 'completed':
                         complete = False
@@ -318,8 +416,13 @@ class GitHub:
                 number = author_futures[future]
                 try:
                     authors[number] = future.result()
+                except GitHubRateLimitError as exc:
+                    rate_limit_exc = exc
                 except Exception as exc:
                     warnings.append(f'PR #{number} 작성자: {exc}')
+
+            if rate_limit_exc is not None:
+                raise rate_limit_exc
 
             for run in result:
                 number = run['pr']
@@ -359,16 +462,18 @@ class GitHub:
 
 class SnapshotCache:
     def __init__(self, loader, interval=60, initial=None, retry_intervals=(10, 20, 40, 60),
-                 active_interval=45, followup_checker=None):
+                 active_interval=45, followup_checker=None, rate_limit_getter=None):
         self.loader = loader
         self.interval = interval
         self.retry_intervals = tuple(retry_intervals)
         self.active_interval = active_interval
         self.followup_checker = followup_checker
+        self.rate_limit_getter = rate_limit_getter
         self.value, self.error, self.updated = initial, None, None
         self.last_duration = None
         self.next_refresh = None
         self.consecutive_errors = 0
+        self.rate_limited_until = None
         self.lock = threading.Lock()
         self.loading = False
         self._started = False
@@ -397,6 +502,11 @@ class SnapshotCache:
             errs = self.consecutive_errors
             value = self.value
             duration = self.last_duration or 0.0
+            limited_until = self.rate_limited_until
+        if limited_until is not None:
+            wait = limited_until - time.time()
+            if wait > 0:
+                return max(5.0, min(wait, 3600.0))
         if err:
             idx = min(max(errs - 1, 0), len(self.retry_intervals) - 1)
             return float(self.retry_intervals[idx])
@@ -404,6 +514,10 @@ class SnapshotCache:
             return 1.0
         has_active = any(r.get('status') != 'completed' for r in (value or {}).get('runs', []))
         target = self.active_interval if (has_active and self.active_interval is not None) else self.interval
+        if self.rate_limit_getter is not None:
+            remaining, _ = self.rate_limit_getter()
+            if remaining is not None and remaining < 500:
+                target = max(target, 120.0)
         if target <= 0:
             return 0.0
         return max(10.0, target - duration)
@@ -425,12 +539,17 @@ class SnapshotCache:
             return self.value, self.error, self.loading
 
     def meta(self):
+        remaining, reset_at = (None, None)
+        if self.rate_limit_getter is not None:
+            remaining, reset_at = self.rate_limit_getter()
         with self.lock:
             return {
                 'duration_ms': int(self.last_duration * 1000) if self.last_duration is not None else None,
                 'next_refresh_at': _iso(self.next_refresh) if self.next_refresh is not None else None,
                 'consecutive_errors': self.consecutive_errors,
                 'interval_seconds': self.interval,
+                'rate_limit_remaining': remaining,
+                'rate_limit_reset_at': _iso(reset_at) if reset_at is not None else None,
             }
 
     def refresh(self):
@@ -442,6 +561,12 @@ class SnapshotCache:
             with self.lock:
                 self.value, self.error = value, None
                 self.consecutive_errors = 0
+                self.rate_limited_until = None
+        except GitHubRateLimitError as exc:
+            with self.lock:
+                self.error = str(exc)
+                self.rate_limited_until = exc.reset_at
+                self.consecutive_errors += 1
         except Exception as exc:
             with self.lock:
                 self.error = str(exc)

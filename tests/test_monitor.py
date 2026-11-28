@@ -1,10 +1,11 @@
+import gzip
 import time
 import unittest
 from copy import deepcopy
 from unittest.mock import patch
 
 from monitor.demo import fixture
-from monitor.github import GitHub, SnapshotCache
+from monitor.github import GitHub, GitHubRateLimitError, SnapshotCache
 from monitor.model import iso, snapshot, state
 from monitor.server import collect_snapshot, safe_snapshot
 
@@ -263,6 +264,113 @@ class AcquisitionTests(unittest.TestCase):
             self.assertIsNotNone(cache.meta()['duration_ms'])
         finally:
             cache.stop()
+
+    def test_collect_auto_startup_fast_pass_runs_only_once(self):
+        status_calls = []
+        def api(path):
+            if '/workflows/' in path:
+                status_calls.append(path)
+                return {'workflow_runs': []}
+            if path == 'user':
+                return {'login': 'vimkim'}
+            raise AssertionError(f'unexpected call: {path}')
+
+        previous = {'runs': [{'id': 1, 'run_attempt': 1, 'status': 'completed', 'jobs_complete': True, 'jobs': []}]}
+        gh = GitHub(api, previous=previous)
+
+        # 1st call: fast active-only pass (no status=completed) + schedules 1-shot followup
+        gh.collect_auto()
+        self.assertTrue(gh.needs_history_followup)
+        self.assertFalse(any('status=completed' in c for c in status_calls))
+
+        # 2nd call: followup fetches completed history and clears followup flag
+        status_calls.clear()
+        gh.collect_auto()
+        self.assertFalse(gh.needs_history_followup)
+        self.assertTrue(any('status=completed' in c for c in status_calls))
+
+        # 3rd call: stays on fast active-only pass without re-triggering followup loop
+        status_calls.clear()
+        gh.collect_auto()
+        self.assertFalse(gh.needs_history_followup)
+        self.assertFalse(any('status=completed' in c for c in status_calls))
+
+    def test_rate_limit_short_circuits_and_waits_until_reset(self):
+        reset_at = time.time() + 120
+        class FakeResp:
+            def __init__(self, status, body, headers):
+                self.status = status
+                self._body = body
+                self._headers = {k.lower(): v for k, v in headers.items()}
+            def read(self):
+                return self._body
+            def getheader(self, name):
+                return self._headers.get(name.lower())
+
+        class FakeConn:
+            requests = 0
+            def request(self, method, path, headers=None):
+                FakeConn.requests += 1
+            def getresponse(self):
+                return FakeResp(403, b'{"message":"API rate limit exceeded"}', {
+                    'X-RateLimit-Remaining': '0',
+                    'X-RateLimit-Reset': str(int(reset_at - 2)),
+                })
+            def close(self):
+                pass
+
+        gh = GitHub()
+        with patch.object(gh, '_get_token', return_value='tok'), \
+             patch('monitor.github.http.client.HTTPSConnection', return_value=FakeConn()):
+            with self.assertRaises(GitHubRateLimitError) as ctx:
+                gh._http_get('user')
+            self.assertIn('한도 초과', str(ctx.exception))
+            self.assertEqual(FakeConn.requests, 1)
+            # Second call short-circuits before making any HTTP request
+            with self.assertRaises(GitHubRateLimitError):
+                gh._http_get('user')
+            self.assertEqual(FakeConn.requests, 1)
+
+        cache = SnapshotCache(lambda: gh.collect(), interval=60,
+                              rate_limit_getter=lambda: (gh.rate_limit_remaining, gh.rate_limit_reset))
+        cache.refresh()
+        delay = cache._next_delay()
+        self.assertGreater(delay, 100.0)
+        self.assertEqual(cache.meta()['rate_limit_remaining'], 0)
+
+    def test_http_etag_304_returns_cached_body(self):
+        sent_headers = []
+        responses = iter([
+            (200, gzip.compress(b'{"login":"vimkim"}'), {'ETag': '"abc"', 'Content-Encoding': 'gzip', 'X-RateLimit-Remaining': '4999'}),
+            (304, b'', {'ETag': '"abc"', 'X-RateLimit-Remaining': '4999'}),
+        ])
+        class FakeResp:
+            def __init__(self, status, body, headers):
+                self.status = status
+                self._body = body
+                self._headers = {k.lower(): v for k, v in headers.items()}
+            def read(self):
+                return self._body
+            def getheader(self, name):
+                return self._headers.get(name.lower())
+
+        class FakeConn:
+            def request(self, method, path, headers=None):
+                sent_headers.append(dict(headers or {}))
+            def getresponse(self):
+                return FakeResp(*next(responses))
+            def close(self):
+                pass
+
+        gh = GitHub()
+        with patch.object(gh, '_get_token', return_value='tok'), \
+             patch('monitor.github.http.client.HTTPSConnection', return_value=FakeConn()):
+            first = gh._http_get('user')
+            second = gh._http_get('user')
+        self.assertEqual(first, {'login': 'vimkim'})
+        self.assertEqual(second, {'login': 'vimkim'})
+        self.assertNotIn('If-None-Match', sent_headers[0])
+        self.assertEqual(sent_headers[1].get('If-None-Match'), '"abc"')
 
 
 if __name__ == '__main__': unittest.main()

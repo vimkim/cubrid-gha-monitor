@@ -90,6 +90,7 @@ def main():
         lambda: collect_snapshot(github, args.demo, caps, store, auto=True),
         initial=initial,
         followup_checker=(lambda: github.needs_history_followup) if not args.demo else None,
+        rate_limit_getter=(lambda: (github.rate_limit_remaining, github.rate_limit_reset)) if not args.demo else None,
     )
 
     class Handler(BaseHTTPRequestHandler):

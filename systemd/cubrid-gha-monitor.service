@@ -6,9 +6,9 @@ Description=CUBRID GitHub Actions monitor
 Type=notify
 WorkingDirectory=@REPO_DIR@
 Environment="PATH=@PATH@"
-Environment=MONITOR_HOST=127.0.0.1 MONITOR_PORT=8765
+Environment=MONITOR_HOST=127.0.0.1 MONITOR_PORT=8765 MONITOR_BUILD_CAPACITY=8 MONITOR_GENERAL_CAPACITY=174 MONITOR_LIGHT_CAPACITY=20
 EnvironmentFile=-%E/cubrid-gha-monitor/service.env
-ExecStart=/usr/bin/env python3 -m monitor.server --host ${MONITOR_HOST} --port ${MONITOR_PORT}
+ExecStart=/usr/bin/env python3 -m monitor.server --host ${MONITOR_HOST} --port ${MONITOR_PORT} --build-capacity ${MONITOR_BUILD_CAPACITY} --general-capacity ${MONITOR_GENERAL_CAPACITY} --light-capacity ${MONITOR_LIGHT_CAPACITY}
 TimeoutStartSec=30s
 KillSignal=SIGINT
 TimeoutStopSec=10s

@@ -32,7 +32,7 @@ Linux에서 systemd 사용자 서비스 관리자가 실행 중이면 `just up`�
 
 시작 명령은 대시보드가 포트를 열 때까지 기다린 뒤 접속 URL을 표시합니다. 나중에 실행 상태와 URL을 확인하려면 `just status`를 실행합니다. 모든 IPv4 인터페이스에서 접속을 받는 경우 로컬 URL과 확인 가능한 인터페이스의 URL을 표시합니다.
 
-세 시작 명령은 현재 사용자의 `cubrid-gha-monitor.service`를 공유합니다. 실행 중에 시작 명령을 다시 실행하면 기존 인스턴스의 URL을 표시합니다. 임시 서비스의 시작 옵션을 바꾸려면 `just down`으로 종료한 뒤 `just up --port 9000`처럼 다시 시작합니다.
+세 시작 명령은 현재 사용자의 `cubrid-gha-monitor.service`를 공유합니다. 영구 유닛(`just install`) 설치 후 `just up-dev2`나 `just up-for-all`, 또는 `just up --host ... --port ... --build-capacity ...`를 실행하면 `service.env`를 갱신하고 서비스를 재시작합니다. 재시작만 하려면 `just restart`를 실행합니다. 임시 실행(`just install` 미설치) 중 시작 옵션을 바꾸려면 `just down`으로 종료한 뒤 `just up --port 9000`처럼 다시 시작합니다.
 
 서비스 상세 상태는 `systemctl --user status cubrid-gha-monitor.service`로 확인합니다. 최근 로그는 `just logs`로 확인합니다.
 
@@ -40,11 +40,11 @@ Linux에서 systemd 사용자 서비스 관리자가 실행 중이면 `just up`�
 
 유지할 체크아웃에서 `just install`을 실행하면 현재 경로와 PATH를 사용하는
 사용자 유닛이 설치됩니다. 실행 중인 임시 서비스는 계속 동작합니다.
-전환할 때는 사용이 끝난 뒤 `just down`을 실행하고 `just up`으로 설치된 유닛을 시작합니다.
+전환할 때는 사용이 끝난 뒤 `just down`을 실행하고 `just up`(또는 `just up-dev2` / `just up-for-all`)으로 설치된 유닛을 시작합니다.
 
-설치된 유닛은 기본적으로 `127.0.0.1:8765`에 바인딩합니다. 주소나 포트를
-바꾸려면 `${XDG_CONFIG_HOME:-$HOME/.config}/cubrid-gha-monitor/service.env`에
-`MONITOR_HOST`와 `MONITOR_PORT`를 `NAME=value` 형식으로 설정한 뒤 `just up`을 실행합니다.
+설치된 유닛은 기본적으로 `127.0.0.1:8765`에 바인딩합니다. 주소, 포트, 풀 용량을
+수동으로 바꾸려면 `${XDG_CONFIG_HOME:-$HOME/.config}/cubrid-gha-monitor/service.env`에
+`MONITOR_HOST`, `MONITOR_PORT`, `MONITOR_BUILD_CAPACITY`, `MONITOR_GENERAL_CAPACITY`, `MONITOR_LIGHT_CAPACITY`를 `NAME=value` 형식으로 설정한 뒤 `just restart`를 실행합니다.
 필요하면 `GH_CONFIG_DIR`이나 `XDG_CACHE_HOME`도 이 파일에 설정합니다.
 인증에는 서비스 사용자 계정의 GitHub CLI 설정을 사용합니다.
 
